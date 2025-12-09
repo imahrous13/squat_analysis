@@ -22,7 +22,7 @@ class SquatAnalyzer:
         # Thresholds (Configurable)
         self.stand_threshold = 160
         self.descend_threshold = 140 # Start counting descent
-        self.deep_threshold = 100     # Parallel or below (Easier: 100 instead of 95)
+        self.deep_threshold = 98     # Almost parallel (Very lenient)
         
         # Quality Metrics Data for current rep
         self.min_knee_angle = 180
@@ -178,8 +178,8 @@ class SquatAnalyzer:
             
             # If knees are significantly narrower than ankles (Valgus)
             # If knees are significantly narrower than ankles (Valgus)
-            # Threshold: Knees < 60% of ankle width
-            if knee_width < ankle_width * 0.60:
+            # Threshold: Knees < 63% of ankle width
+            if knee_width < ankle_width * 0.63:
                 valgus_detected = True
                 
         else: # SIDE
@@ -196,7 +196,9 @@ class SquatAnalyzer:
                 knee_x = l_knee_px[0]
                 
                 # Tolerance for "Slightly Forward" (Rule 3)
-                tolerance = 100 # Increased to 100 for extremely lenient check
+                # Tolerance for "Slightly Forward" (Rule 3)
+                # Tolerance for "Slightly Forward" (Rule 3)
+                tolerance = 85 # Very lenient tolerance (85px)
                 
                 if toe_x < ankle_x: # Facing Left
                     if knee_x < toe_x - tolerance: # Crossed by more than tolerance
@@ -214,7 +216,9 @@ class SquatAnalyzer:
                 knee_x = r_knee_px[0]
                 
                 # Tolerance for "Slightly Forward" (Rule 3)
-                tolerance = 100 # Increased to 100 for extremely lenient check
+                # Tolerance for "Slightly Forward" (Rule 3)
+                # Tolerance for "Slightly Forward" (Rule 3)
+                tolerance = 85 # Very lenient tolerance (85px)
                 
                 if toe_x < ankle_x: # Facing Left
                     if knee_x < toe_x - tolerance: # Crossed by more than tolerance
@@ -229,8 +233,8 @@ class SquatAnalyzer:
         if valgus_detected:
             self.knee_valgus_flags += 1
         
-        # Relaxed Back Angle Check (35 degrees allows for extreme forward lean)
-        if current_torso_angle < 35:
+        # Relaxed Back Angle Check (38 degrees)
+        if current_torso_angle < 38:
             self.back_angle_flags += 1
             
         if knee_over_toes:
@@ -243,7 +247,7 @@ class SquatAnalyzer:
         # Normalize threshold? 0.02 is rough guess for normalized, but we have pixels here.
         # Let's use relative to ankle-toe distance or just fixed pixel threshold scaled by height?
         # Fixed pixel: 
-        heel_lift_threshold = 90 # Increased to 90 for extremely lenient check
+        heel_lift_threshold = 75 # Very lenient threshold
         
         l_toe_py = l_toe_px[1]
         l_heel_py = get_landmark_pixel(landmarks[self.mp_pose.PoseLandmark.LEFT_HEEL.value], frame_width, frame_height)[1]
@@ -368,10 +372,10 @@ class SquatAnalyzer:
         deductions = []
         
         # 1. Depth
-        if self.min_knee_angle > 120:
+        if self.min_knee_angle > 115:
             score -= 20
             deductions.append("Too shallow")
-        elif self.min_knee_angle > 110:
+        elif self.min_knee_angle > 105:
             score -= 10
             deductions.append("Depth could be better")
             
@@ -418,7 +422,7 @@ class SquatAnalyzer:
         critical_faults = []
         
         # 1. Depth (Rule 5)
-        if self.min_knee_angle > 120: 
+        if self.min_knee_angle > 115: 
             critical_faults.append("Shallow")
             
         # 2. Valgus (Rule 3 - Knee collapse)
