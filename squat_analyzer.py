@@ -457,23 +457,32 @@ class SquatAnalyzer:
         Returns actionable advice based on detected faults.
         """
         if not faults:
-            return "Perfect form! Keep it up."
+            import random
+            pro_tips = [
+                "Light weight baby! Brace that core.",
+                "Ass to grass! Drive with your hips.",
+                "Clean rep. Keep squeezing the glutes.",
+                "Textbook. Don't let the tension drop.",
+                "Easy money! Focus on bar speed.",
+                "Butter! Stay tight at the bottom."
+            ]
+            return random.choice(pro_tips)
             
         advice_map = {
-            "Shallow": "Squat deeper! Hips below knees.",
-            "Too shallow": "Squat deeper! Hips below knees.",
-            "Depth could be better": "Try to go a bit lower.",
-            "Valgus": "Push your knees OUT!",
-            "Knee valgus": "Push your knees OUT!",
-            "Knee Valgus (caving in)": "Push your knees OUT!",
-            "Knee Over Toes": "Sit hips BACK. Keep weight on heels.",
-            "Knees crossed toes": "Sit hips BACK. Keep weight on heels.",
-            "Heel Lift": "Keep heels FLAT on floor.",
-            "Heels lifted": "Keep heels FLAT on floor.",
-            "Back Lean": "Keep CHEST UP! Look forward.",
-            "Leaning forward": "Keep CHEST UP! Look forward.",
-            "Dive bomb (too fast)": "Slow down your descent.",
-            "Asymmetrical": "Distribute weight evenly."
+            "Shallow": "Ass to grass! Don't cheat depth.",
+            "Too shallow": "Ass to grass! Don't cheat depth.",
+            "Depth could be better": "Get lower. Parallel at least.",
+            "Valgus": "Knees OUT! Fight the cave.",
+            "Knee valgus": "Knees OUT! Fight the cave.",
+            "Knee Valgus (caving in)": "Knees OUT! Fight the cave.",
+            "Knee Over Toes": "Sit back! Save your knees.",
+            "Knees crossed toes": "Sit back! Save your knees.",
+            "Heel Lift": "Heels GLUED to the floor.",
+            "Heels lifted": "Heels GLUED to the floor.",
+            "Back Lean": "Chest UP! This isn't a Good Morning.",
+            "Leaning forward": "Chest UP! This isn't a Good Morning.",
+            "Dive bomb (too fast)": "Stop dive bombing! Control it.",
+            "Asymmetrical": "Stop shifting. Push evenly."
         }
         
         # Prioritize advice
