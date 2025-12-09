@@ -13,12 +13,16 @@ class SquatAnalyzer:
         self.current_rep_quality = {}
         self.current_rep_quality = {}
         self.feedback = ""
+        self.feedback = ""
         self.advice = ""
+        self.prev_state = "STANDING"
+        self.state_counter = 0 # Debounce counter
+        self.state_transition_threshold = 4 # Frames required to confirm state change
         
         # Thresholds (Configurable)
         self.stand_threshold = 160
         self.descend_threshold = 140 # Start counting descent
-        self.deep_threshold = 80     # Parallel or below
+        self.deep_threshold = 100     # Parallel or below (Easier: 100 instead of 95)
         
         # Quality Metrics Data for current rep
         self.min_knee_angle = 180
@@ -168,11 +172,14 @@ class SquatAnalyzer:
             current_torso_angle = (l_torso_angle + r_torso_angle) / 2.0
             symmetry_diff = abs(l_knee_angle - r_knee_angle)
             
-            # Check Valgus (Front logic)
-            valgus_threshold = 20
-            l_valgus_err = max(0, l_knee_px[0] - (l_ankle_px[0] + valgus_threshold))
-            r_valgus_err = max(0, (r_ankle_px[0] - valgus_threshold) - r_knee_px[0])
-            if l_valgus_err > 0 or r_valgus_err > 0:
+            # Check Valgus (Front logic) - Robust Width Ratio Method
+            knee_width = abs(l_knee_px[0] - r_knee_px[0])
+            ankle_width = abs(l_ankle_px[0] - r_ankle_px[0])
+            
+            # If knees are significantly narrower than ankles (Valgus)
+            # If knees are significantly narrower than ankles (Valgus)
+            # Threshold: Knees < 60% of ankle width
+            if knee_width < ankle_width * 0.60:
                 valgus_detected = True
                 
         else: # SIDE
@@ -188,11 +195,14 @@ class SquatAnalyzer:
                 ankle_x = l_ankle_px[0]
                 knee_x = l_knee_px[0]
                 
+                # Tolerance for "Slightly Forward" (Rule 3)
+                tolerance = 100 # Increased to 100 for extremely lenient check
+                
                 if toe_x < ankle_x: # Facing Left
-                    if knee_x < toe_x: # Crossed
+                    if knee_x < toe_x - tolerance: # Crossed by more than tolerance
                         knee_over_toes = True
                 else: # Facing Right
-                    if knee_x > toe_x: # Crossed
+                    if knee_x > toe_x + tolerance:
                         knee_over_toes = True
 
             else: # RIGHT
@@ -204,7 +214,7 @@ class SquatAnalyzer:
                 knee_x = r_knee_px[0]
                 
                 # Tolerance for "Slightly Forward" (Rule 3)
-                tolerance = 30 # pixels. Adjustable.
+                tolerance = 100 # Increased to 100 for extremely lenient check
                 
                 if toe_x < ankle_x: # Facing Left
                     if knee_x < toe_x - tolerance: # Crossed by more than tolerance
@@ -219,7 +229,8 @@ class SquatAnalyzer:
         if valgus_detected:
             self.knee_valgus_flags += 1
         
-        if current_torso_angle < 70:
+        # Relaxed Back Angle Check (35 degrees allows for extreme forward lean)
+        if current_torso_angle < 35:
             self.back_angle_flags += 1
             
         if knee_over_toes:
@@ -232,7 +243,7 @@ class SquatAnalyzer:
         # Normalize threshold? 0.02 is rough guess for normalized, but we have pixels here.
         # Let's use relative to ankle-toe distance or just fixed pixel threshold scaled by height?
         # Fixed pixel: 
-        heel_lift_threshold = 15 # pixels
+        heel_lift_threshold = 90 # Increased to 90 for extremely lenient check
         
         l_toe_py = l_toe_px[1]
         l_heel_py = get_landmark_pixel(landmarks[self.mp_pose.PoseLandmark.LEFT_HEEL.value], frame_width, frame_height)[1]
@@ -268,33 +279,63 @@ class SquatAnalyzer:
         
         if self.state == "STANDING":
             if current_knee_angle < self.descend_threshold:
-                self.state = "DESCENDING"
-                self._reset_rep_stats()
-                self.rep_start_time = current_time
-                self.feedback = "Descending..."
+                self.state_counter += 1
+                if self.state_counter > self.state_transition_threshold:
+                    self.state = "DESCENDING"
+                    self._reset_rep_stats()
+                    self.rep_start_time = current_time
+                    self.feedback = "Descending..."
+                    self.state_counter = 0
+            else:
+                 self.state_counter = 0
                 
         elif self.state == "DESCENDING":
             if current_knee_angle < self.deep_threshold:
-                self.state = "BOTTOM"
-                self.bottom_start_time = current_time
-                self.descent_duration = current_time - self.rep_start_time
-                self.feedback = "Hold bottom..."
+                self.state_counter += 1
+                if self.state_counter > self.state_transition_threshold:
+                    self.state = "BOTTOM"
+                    self.bottom_start_time = current_time
+                    self.descent_duration = current_time - self.rep_start_time
+                    self.feedback = "Hold bottom..."
+                    self.state_counter = 0
             elif current_knee_angle > self.descend_threshold:
+                # Abort immediately if back to standing? or debounce? 
+                # Abort usually doesn't need strict debounce as it's a fail-safe
                 self.state = "STANDING"
                 self.feedback = "Aborted: Go Deeper!"
+                self.state_counter = 0
+            else:
+                self.state_counter = 0
                 
         elif self.state == "BOTTOM":
             if current_knee_angle > self.deep_threshold + 10:
-                self.state = "ASCENDING"
-                self.bottom_duration = current_time - self.bottom_start_time
-                self.feedback = "Push up!"
+                self.state_counter += 1
+                if self.state_counter > self.state_transition_threshold:
+                    self.state = "ASCENDING"
+                    self.bottom_duration = current_time - self.bottom_start_time
+                    self.feedback = "Push up!"
+                    self.state_counter = 0
+            else:
+                self.state_counter = 0
                 
         elif self.state == "ASCENDING":
             if current_knee_angle > self.stand_threshold:
-                self.state = "STANDING"
-                self.ascent_duration = current_time - (self.bottom_start_time + self.bottom_duration)
-                self.rep_count += 1
-                self._score_rep(symmetry_diff)
+                self.state_counter += 1
+                if self.state_counter > self.state_transition_threshold:
+                    self.state = "STANDING"
+                    self.ascent_duration = current_time - (self.bottom_start_time + self.bottom_duration)
+                    
+                    # Minimum Duration Check (Prevent Fake Reps)
+                    rep_total_time = self.descent_duration + self.bottom_duration + self.ascent_duration
+                    if rep_total_time > 1.0: # Valid rep must take at least 1s
+                        self.rep_count += 1
+                        self._score_rep(symmetry_diff)
+                    else:
+                        self.feedback = "Rep too fast (ignored)"
+                        
+                    self.state_counter = 0
+            else:
+                self.state_counter = 0
                 
         # Use override if immediate warning is needed, but prioritize state feedback if changing state
         if feed_override and self.state in ["DESCENDING", "BOTTOM"]:
@@ -327,10 +368,10 @@ class SquatAnalyzer:
         deductions = []
         
         # 1. Depth
-        if self.min_knee_angle > 90:
+        if self.min_knee_angle > 120:
             score -= 20
             deductions.append("Too shallow")
-        elif self.min_knee_angle > 80:
+        elif self.min_knee_angle > 110:
             score -= 10
             deductions.append("Depth could be better")
             
@@ -377,24 +418,23 @@ class SquatAnalyzer:
         critical_faults = []
         
         # 1. Depth (Rule 5)
-        if self.min_knee_angle > 90: 
+        if self.min_knee_angle > 120: 
             critical_faults.append("Shallow")
             
         # 2. Valgus (Rule 3 - Knee collapse)
-        if self.knee_valgus_flags > 5: 
+        if self.knee_valgus_flags > 30: # Increased from 15
             critical_faults.append("Valgus")
             
         # 3. Knee Over Toes (Rule 3 - Excessive)
-        if self.knee_over_toes_flags > 5: 
+        if self.knee_over_toes_flags > 45: # Increased from 15
             critical_faults.append("Knee Over Toes")
             
         # 4. Heel Lift (Rule 6)
-        if self.heel_lift_flags > 5:
+        if self.heel_lift_flags > 30: # Increased from 15
             critical_faults.append("Heel Lift")
             
-        # 5. Back Angle (Rule 2) - Maybe critical if severe? User said "Keep Chest Up".
-        # We'll allow minor lean but if sustained > 5 flags...
-        if self.back_angle_flags > 10: # Increased tolerance for critical, kept strict for score deduction?
+        # 5. Back Angle (Rule 2)
+        if self.back_angle_flags > 45: # Increased from 20
             critical_faults.append("Back Lean")
 
         # Result
