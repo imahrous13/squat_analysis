@@ -1,7 +1,7 @@
 import time
 import numpy as np
 import mediapipe as mp
-from utils import calculate_angle, get_landmark_pixel
+from src.core.utils import calculate_angle, get_landmark_pixel
 
 class SquatAnalyzer:
     def __init__(self):
@@ -17,12 +17,12 @@ class SquatAnalyzer:
         self.advice = ""
         self.prev_state = "STANDING"
         self.state_counter = 0 # Debounce counter
-        self.state_transition_threshold = 4 # Frames required to confirm state change
+        self.state_transition_threshold = 8 # Increased from 4 to prevent overcounting
         
-        # Thresholds (Configurable)
-        self.stand_threshold = 160
-        self.descend_threshold = 140 # Start counting descent
-        self.deep_threshold = 98     # Almost parallel (Very lenient)
+        # Thresholds (Balanced for stability)
+        self.stand_threshold = 165 # Increased from 160
+        self.descend_threshold = 145 # Increased from 140
+        self.deep_threshold = 125     # Relaxed from 98 to count standard reps
         
         # Quality Metrics Data for current rep
         self.min_knee_angle = 180
@@ -38,6 +38,7 @@ class SquatAnalyzer:
         
         # Landmarks indices (MediaPipe Pose)
         self.mp_pose = mp.solutions.pose
+        self._reset_rep_stats()
         
     def _reset_rep_stats(self):
         self.min_knee_angle = 180
@@ -282,14 +283,21 @@ class SquatAnalyzer:
             feed_override = "Keep Heels Down!"
         
         if self.state == "STANDING":
+            # Squat must be bilateral: both knees should bend somewhat together
+            # If one knee is bending much more than the other, it's likely a lunge
+            knee_diff = abs(l_knee_angle - r_knee_angle)
             if current_knee_angle < self.descend_threshold:
-                self.state_counter += 1
-                if self.state_counter > self.state_transition_threshold:
-                    self.state = "DESCENDING"
-                    self._reset_rep_stats()
-                    self.rep_start_time = current_time
-                    self.feedback = "Descending..."
+                if knee_diff > 40: # Significant asymmetry -> likely a lunge
+                    self.feedback = "Lunge detected? Switch to Lunge mode."
                     self.state_counter = 0
+                else:
+                    self.state_counter += 1
+                    if self.state_counter > self.state_transition_threshold:
+                        self.state = "DESCENDING"
+                        self._reset_rep_stats()
+                        self.rep_start_time = current_time
+                        self.feedback = "Descending..."
+                        self.state_counter = 0
             else:
                  self.state_counter = 0
                 
@@ -361,7 +369,8 @@ class SquatAnalyzer:
             "knee_over_toes": knee_over_toes,
             "correct_reps": self.correct_reps,
             "incorrect_reps": self.incorrect_reps,
-            "advice": self.advice
+            "advice": self.advice,
+            "target_muscles": "Quadriceps, Glutes, Hamstrings"
         }
 
     def _score_rep(self, symmetry_diff):
@@ -371,44 +380,42 @@ class SquatAnalyzer:
         score = 100
         deductions = []
         
-        # 1. Depth
-        if self.min_knee_angle > 115:
-            score -= 20
+        # 1. Depth - More Inclusive
+        if self.min_knee_angle > 140:
+            score -= 30 
             deductions.append("Too shallow")
-        elif self.min_knee_angle > 105:
-            score -= 10
+        elif self.min_knee_angle > 125:
+            score -= 10 
             deductions.append("Depth could be better")
             
         # 2. Tempo
-        if self.descent_duration < 1.0:
-            score -= 10
-            deductions.append("Dive bomb (too fast)")
+        if self.descent_duration < 0.6: # More lenient
+            score -= 5
+            deductions.append("Too fast")
         
         # 3. Symmetry
-        # Only check symmetry if it's significant (arbitrary check to safely ignore side view "0" or huge diff)
-        # Ideally we'd know if it was a FRONT rep, but for now we rely on the passed diff.
-        if symmetry_diff > 10:
-            score -= 10
+        if symmetry_diff > 0.15: 
+            score -= 5
             deductions.append("Asymmetrical")
             
         # 4. Back Angle
-        if self.back_angle_flags > 5: # If detected in multiple frames
-            score -= 10
+        if self.back_angle_flags > 15: 
+            score -= 5
             deductions.append("Leaning forward")
             
         # 5. Knee Valgus
-        if self.knee_valgus_flags > 5:
-            score -= 15
-            deductions.append("Knee valgus (caving in)")
+        if self.knee_valgus_flags > 15: 
+            score -= 10
+            deductions.append("Knee caving")
             
         # 6. Knee Over Toes
-        if self.knee_over_toes_flags > 5:
-            score -= 15
-            deductions.append("Knees crossed toes")
+        if self.knee_over_toes_flags > 20: 
+            score -= 5
+            deductions.append("Knees forward")
             
         # 7. Heel Lift
-        if self.heel_lift_flags > 5:
-            score -= 15
+        if self.heel_lift_flags > 15: 
+            score -= 10
             deductions.append("Heels lifted")
             
         self.current_rep_quality = {
@@ -422,39 +429,39 @@ class SquatAnalyzer:
         critical_faults = []
         
         # 1. Depth (Rule 5)
-        if self.min_knee_angle > 115: 
+        if self.min_knee_angle > 140: # More inclusive
             critical_faults.append("Shallow")
             
         # 2. Valgus (Rule 3 - Knee collapse)
-        if self.knee_valgus_flags > 30: # Increased from 15
+        if self.knee_valgus_flags > 35: 
             critical_faults.append("Valgus")
             
         # 3. Knee Over Toes (Rule 3 - Excessive)
-        if self.knee_over_toes_flags > 45: # Increased from 15
+        if self.knee_over_toes_flags > 50: 
             critical_faults.append("Knee Over Toes")
             
         # 4. Heel Lift (Rule 6)
-        if self.heel_lift_flags > 30: # Increased from 15
+        if self.heel_lift_flags > 35: 
             critical_faults.append("Heel Lift")
             
         # 5. Back Angle (Rule 2)
-        if self.back_angle_flags > 45: # Increased from 20
+        if self.back_angle_flags > 50: 
             critical_faults.append("Back Lean")
 
         # Result
-        if not critical_faults:
+        if not critical_faults and score >= 70: # Lowered passing score to 70
              self.correct_reps += 1
         else:
              self.incorrect_reps += 1
              
         # Generate Advice
         self.advice = self._get_feedback_advice(critical_faults + deductions)
-             
         self.feedback = f"Rep {self.rep_count}: {self.current_rep_quality['comments']}"
         
     def _get_feedback_advice(self, faults):
         """
         Returns actionable advice based on detected faults.
+        Provides detailed, specific advice for each form issue.
         """
         if not faults:
             import random
@@ -468,27 +475,37 @@ class SquatAnalyzer:
             ]
             return random.choice(pro_tips)
             
+        # Detailed advice map with comprehensive guidance for each fault
         advice_map = {
-            "Shallow": "Ass to grass! Don't cheat depth.",
-            "Too shallow": "Ass to grass! Don't cheat depth.",
-            "Depth could be better": "Get lower. Parallel at least.",
-            "Valgus": "Knees OUT! Fight the cave.",
-            "Knee valgus": "Knees OUT! Fight the cave.",
-            "Knee Valgus (caving in)": "Knees OUT! Fight the cave.",
-            "Knee Over Toes": "Sit back! Save your knees.",
-            "Knees crossed toes": "Sit back! Save your knees.",
-            "Heel Lift": "Heels GLUED to the floor.",
-            "Heels lifted": "Heels GLUED to the floor.",
-            "Back Lean": "Chest UP! This isn't a Good Morning.",
-            "Leaning forward": "Chest UP! This isn't a Good Morning.",
-            "Dive bomb (too fast)": "Stop dive bombing! Control it.",
-            "Asymmetrical": "Stop shifting. Push evenly."
+            "Shallow": "🔴 DEPTH ISSUE: Go deeper! Your knees should bend to at least 90° (parallel). Focus on sitting back and down, not just bending knees. Think 'hips back, chest up'.",
+            "Too shallow": "🔴 DEPTH ISSUE: Go deeper! Your knees should bend to at least 90° (parallel). Focus on sitting back and down, not just bending knees. Think 'hips back, chest up'.",
+            "Depth could be better": "🟡 DEPTH: Get lower. Aim for parallel (90°) or below. Engage glutes and hamstrings by going deeper.",
+            "Valgus": "🔴 KNEE VALGUS: Knees caving inward! Push knees OUT over toes. Strengthen glutes and focus on external rotation. This prevents knee injury.",
+            "Knee valgus": "🔴 KNEE VALGUS: Knees caving inward! Push knees OUT over toes. Strengthen glutes and focus on external rotation. This prevents knee injury.",
+            "Knee Valgus (caving in)": "🔴 KNEE VALGUS: Knees caving inward! Push knees OUT over toes. Strengthen glutes and focus on external rotation. This prevents knee injury.",
+            "Knee Over Toes": "🔴 KNEE POSITION: Knees too far forward! Sit BACK more, push hips back first. Keep shins more vertical. This protects your knees.",
+            "Knees crossed toes": "🔴 KNEE POSITION: Knees too far forward! Sit BACK more, push hips back first. Keep shins more vertical. This protects your knees.",
+            "Heel Lift": "🔴 FOOT POSITION: Heels lifting off ground! Keep entire foot planted. Try wider stance or elevate heels slightly if ankle mobility is limited.",
+            "Heels lifted": "🔴 FOOT POSITION: Heels lifting off ground! Keep entire foot planted. Try wider stance or elevate heels slightly if ankle mobility is limited.",
+            "Back Lean": "🔴 TORSO ANGLE: Leaning too far forward! Keep chest UP and core tight. Imagine showing your chest to the wall in front. This isn't a good morning exercise.",
+            "Leaning forward": "🔴 TORSO ANGLE: Leaning too far forward! Keep chest UP and core tight. Imagine showing your chest to the wall in front. This isn't a good morning exercise.",
+            "Dive bomb (too fast)": "🟡 TEMPO: Control the descent! Lower yourself slowly (2-3 seconds). This builds strength and prevents injury. Don't drop down.",
+            "Asymmetrical": "🟡 SYMMETRY: One side is doing more work! Focus on equal weight distribution. Push evenly through both feet. Check for muscle imbalances."
         }
         
-        # Prioritize advice
+        # Collect all relevant advice messages
+        advice_list = []
         for fault in faults:
             for key in advice_map:
-                if key in fault: 
-                    return advice_map[key]
+                if key in fault:
+                    advice_list.append(advice_map[key])
+                    break
+        
+        # Return prioritized advice (most critical first) or combine if multiple issues
+        if advice_list:
+            # Return the first (most critical) advice, or combine if multiple critical issues
+            if len(advice_list) > 1:
+                return f"{advice_list[0]} | Also: {', '.join([a.split(':')[0] for a in advice_list[1:]])}"
+            return advice_list[0]
                     
-        return "Improve form."
+        return "🟡 Focus on maintaining proper form throughout the movement."

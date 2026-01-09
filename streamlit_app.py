@@ -3,12 +3,195 @@ import cv2
 import tempfile
 import os
 import time
-from pose_detector import PoseDetector
-from squat_analyzer import SquatAnalyzer
-from utils import draw_text_with_background, get_landmark_pixel
 import mediapipe as mp
+import numpy as np
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+import av
 
-def process_video(input_path, output_path):
+# Internal imports
+from src.core.movenet_pose import MoveNetEstimator as PoseDetector
+from src.core.exercise_detector import ExerciseDetector
+from src.analyzers.squat_analyzer import SquatAnalyzer
+from src.analyzers.pushup_analyzer import PushUpAnalyzer
+from src.analyzers.deadlift_analyzer import DeadliftAnalyzer
+from src.analyzers.lunge_analyzer import LungeAnalyzer
+from src.analyzers.jumping_jacks_analyzer import JumpingJacksAnalyzer
+from src.analyzers.plank_analyzer import PlankAnalyzer
+from src.core.utils import draw_text_with_background, get_landmark_pixel
+
+# RTC Configuration for WebRTC
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
+
+class BaseVideoProcessor(VideoProcessorBase):
+    def __init__(self, analyzer_class):
+        self.detector = PoseDetector()
+        self.analyzer = analyzer_class() if analyzer_class else None
+        self.exercise_name = analyzer_class.__name__.replace('Analyzer', '') if analyzer_class else "Detecting..."
+        self.exercise_detector = ExerciseDetector()
+        self.p_time = 0
+
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        h, w, c = img.shape
+        
+        # Pose Detection
+        img, results = self.detector.find_pose(img, draw=True)
+        landmarks = self.detector.get_landmarks()
+        
+        analysis_data = {}
+        if landmarks:
+            # Auto-Detect Exercise if not set
+            if self.analyzer is None:
+                self.exercise_detector.add_frame(landmarks)
+                detected = self.exercise_detector.detect()
+                if detected:
+                    self.exercise_name = detected
+                    analyzers = {
+                        "Squat": SquatAnalyzer, "Push-Up": PushUpAnalyzer, 
+                        "Deadlift": DeadliftAnalyzer, "Lunge": LungeAnalyzer,
+                        "Jumping Jacks": JumpingJacksAnalyzer, "Plank": PlankAnalyzer
+                    }
+                    self.analyzer = analyzers[detected]()
+            
+            if self.analyzer:
+                analysis_data = self.analyzer.analyze(landmarks, w, h)
+            else:
+                analysis_data = {"state": "DETECTING...", "rep_count": 0, "feedback": "Perform an exercise to start", "target_muscles": "None"}
+            self._draw_specifics(img, landmarks, analysis_data, w, h)
+        
+        # FPS
+        c_time = time.time()
+        fps = 1 / (c_time - self.p_time) if self.p_time > 0 else 0
+        self.p_time = c_time
+        
+        # Overlay
+        draw_text_with_background(img, f"FPS: {int(fps)}", (10, 30), text_color=(0, 255, 0))
+        
+        if analysis_data:
+            self._draw_common_overlay(img, analysis_data, w, h)
+            
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+    def _draw_specifics(self, img, landmarks, analysis_data, w, h):
+        pass
+
+    def _draw_common_overlay(self, img, analysis_data, w, h):
+        state_color = (0, 255, 255)
+        if analysis_data.get('state') in ["BOTTOM", "LOCKOUT", "TOP_PLANK"]: 
+            state_color = (0, 255, 0)
+            
+        # Vertical stacking with consistent spacing
+        y_pos = 40
+        draw_text_with_background(img, f"Exercise: {self.exercise_name}", (10, y_pos), text_color=(255, 255, 255))
+        
+        y_pos += 40
+        draw_text_with_background(img, f"State: {analysis_data['state']}", (10, y_pos), text_color=state_color)
+        
+        y_pos += 40
+        draw_text_with_background(img, f"Muscles: {analysis_data.get('target_muscles', 'N/A')}", (10, y_pos), font_scale=0.6, text_color=(255, 150, 0))
+        
+        y_pos += 40
+        draw_text_with_background(img, f"Total Reps: {analysis_data['rep_count']}", (10, y_pos), font_scale=0.8, thickness=2)
+        
+        y_pos += 35
+        c_reps = analysis_data.get('correct_reps', 0)
+        i_reps = analysis_data.get('incorrect_reps', 0)
+        draw_text_with_background(img, f"Correct: {c_reps}", (10, y_pos), font_scale=0.6, text_color=(0, 255, 0))
+        draw_text_with_background(img, f"Incorrect: {i_reps}", (160, y_pos), font_scale=0.6, text_color=(0, 0, 255))
+        
+        y_pos += 40
+        feedback = analysis_data.get('feedback', '')
+        if feedback:
+            draw_text_with_background(img, f"Feedback: {feedback}", (10, y_pos), text_color=(0, 100, 255))
+        
+        y_pos += 40
+        advice = analysis_data.get('advice', '')
+        if advice:
+            for line in self._wrap_text(advice, 50)[:3]:
+                draw_text_with_background(img, line, (10, y_pos), text_color=(255, 200, 0), font_scale=0.5)
+                y_pos += 25
+        y_pos += 40
+        score = analysis_data.get('last_rep_score', 0)
+        draw_text_with_background(img, f"Last Score: {score}", (10, y_pos), 
+                                  text_color=(0, 255, 0) if score >= 75 else (0, 0, 255))
+        
+        # Display reasons for failure if score is low
+        if score > 0 and score < 75 and analysis_data.get('reasons'):
+            y_pos += 30
+            draw_text_with_background(img, "Faults Detected:", (10, y_pos), text_color=(0, 0, 255), font_scale=0.5)
+            y_pos += 20
+            for reason in analysis_data['reasons'][:3]:
+                draw_text_with_background(img, f"- {reason}", (20, y_pos), text_color=(0, 0, 255), font_scale=0.4)
+                y_pos += 15
+
+        if analysis_data.get('valgus_detected'):
+            y_pos += 30
+            draw_text_with_background(img, "KNEE VALGUS!", (10, y_pos), text_color=(0, 0, 255), bg_color=(255, 255, 255))
+        
+        y_pos += 30
+        view_mode = analysis_data.get('view', 'Unknown')
+        draw_text_with_background(img, f"View: {view_mode}", (10, y_pos), text_color=(200, 200, 200), font_scale=0.4)
+
+    def _wrap_text(self, text, limit):
+        lines = []
+        words = text.split()
+        current_line = ""
+        for word in words:
+            if len(current_line + word) < limit:
+                current_line += word + " "
+            else:
+                if current_line: lines.append(current_line.strip())
+                current_line = word + " "
+        if current_line: lines.append(current_line.strip())
+        return lines
+
+class SquatVideoProcessor(BaseVideoProcessor):
+    def __init__(self): super().__init__(SquatAnalyzer)
+    def _draw_specifics(self, img, landmarks, analysis_data, w, h):
+        for side in [mp.solutions.pose.PoseLandmark.LEFT_KNEE, mp.solutions.pose.PoseLandmark.RIGHT_KNEE]:
+            pos = get_landmark_pixel(landmarks[side.value], w, h)
+            angle = analysis_data.get('l_knee_angle' if side == mp.solutions.pose.PoseLandmark.LEFT_KNEE else 'r_knee_angle', 0)
+            if angle > 0:
+                cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+class PushUpVideoProcessor(BaseVideoProcessor):
+    def __init__(self): super().__init__(PushUpAnalyzer)
+    def _draw_specifics(self, img, landmarks, analysis_data, w, h):
+        angle = analysis_data.get('elbow_angle', 0)
+        if angle > 0:
+            l_vis = landmarks[mp.solutions.pose.PoseLandmark.LEFT_ELBOW.value].visibility
+            r_vis = landmarks[mp.solutions.pose.PoseLandmark.RIGHT_ELBOW.value].visibility
+            target = mp.solutions.pose.PoseLandmark.LEFT_ELBOW if l_vis > r_vis else mp.solutions.pose.PoseLandmark.RIGHT_ELBOW
+            pos = get_landmark_pixel(landmarks[target.value], w, h)
+            cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+class DeadliftVideoProcessor(BaseVideoProcessor):
+    def __init__(self): super().__init__(DeadliftAnalyzer)
+
+class LungeVideoProcessor(BaseVideoProcessor):
+    def __init__(self): super().__init__(LungeAnalyzer)
+    def _draw_specifics(self, img, landmarks, analysis_data, w, h):
+        lead = analysis_data.get('lead_leg')
+        if lead:
+            target = mp.solutions.pose.PoseLandmark.LEFT_KNEE if lead == "LEFT" else mp.solutions.pose.PoseLandmark.RIGHT_KNEE
+            pos = get_landmark_pixel(landmarks[target.value], w, h)
+            angle = analysis_data.get('l_knee_angle' if lead == 'LEFT' else 'r_knee_angle', 0)
+            cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+class JumpingJacksVideoProcessor(BaseVideoProcessor):
+    def __init__(self): super().__init__(JumpingJacksAnalyzer)
+
+class PlankVideoProcessor(BaseVideoProcessor):
+    def __init__(self): super().__init__(PlankAnalyzer)
+
+class AutoDetectVideoProcessor(BaseVideoProcessor):
+    def __init__(self): super().__init__(None)
+    def _draw_specifics(self, img, landmarks, analysis_data, w, h):
+        pass
+
+def process_video(input_path, output_path, mode="Squat"):
     cap = cv2.VideoCapture(input_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -23,138 +206,134 @@ def process_video(input_path, output_path):
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
     detector = PoseDetector()
-    analyzer = SquatAnalyzer()
+    exercise_detector = ExerciseDetector()
+    analyzers = {
+        "Squat": SquatAnalyzer, "Push-Up": PushUpAnalyzer, "Deadlift": DeadliftAnalyzer, 
+        "Lunge": LungeAnalyzer, "Jumping Jacks": JumpingJacksAnalyzer, "Plank": PlankAnalyzer
+    }
     
-    frame_count = 0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if mode == "Auto-Detect":
+        analyzer = None
+        exercise_name = "Detecting..."
+    else:
+        analyzer = analyzers.get(mode, SquatAnalyzer)()
+        exercise_name = mode
     
     progress_bar = st.progress(0)
-    status_text = st.empty()
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_count = 0
     
     while cap.isOpened():
         ret, frame = cap.read()
-        if not ret:
-            break
+        if not ret: break
             
-        # Pose Detection
-        frame, results = detector.find_pose(frame, draw=True)
+        frame, _ = detector.find_pose(frame, draw=True)
         landmarks = detector.get_landmarks()
         
-        # Analysis
-        analysis_data = {}
         if landmarks:
-             analysis_data = analyzer.analyze(landmarks, width, height)
-             
-             # Draw Angles
-             if analysis_data.get('l_knee_angle', 0) > 0:
-                l_knee = landmarks[mp.solutions.pose.PoseLandmark.LEFT_KNEE.value]
-                lk_pos = get_landmark_pixel(l_knee, width, height)
-                cv2.putText(frame, f"{int(analysis_data['l_knee_angle'])}", lk_pos, 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                
-                r_knee = landmarks[mp.solutions.pose.PoseLandmark.RIGHT_KNEE.value]
-                rk_pos = get_landmark_pixel(r_knee, width, height)
-                cv2.putText(frame, f"{int(analysis_data['r_knee_angle'])}", rk_pos, 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+            if analyzer is None:
+                exercise_detector.add_frame(landmarks)
+                detected = exercise_detector.detect()
+                if detected:
+                    exercise_name = detected
+                    analyzer = analyzers[detected]()
+            
+            if analyzer:
+                analysis_data = analyzer.analyze(landmarks, width, height)
+            else:
+                analysis_data = {"state": "DETECTING...", "rep_count": 0, "target_muscles": "None"}
 
-        # Overlay Info (Same as app.py but adapted)
-        # Dashboard Background
-        cv2.rectangle(frame, (0, 0), (400, 350), (0, 0, 0), cv2.FILLED)
-        cv2.addWeighted(frame[0:350, 0:400], 0.7, frame[0:350, 0:400], 0.3, 0, frame[0:350, 0:400])
-        
-        if analysis_data:
+            # Full Dashboard for Video
             state_color = (0, 255, 255)
-            if analysis_data['state'] == "BOTTOM": state_color = (0, 255, 0)
-            draw_text_with_background(frame, f"State: {analysis_data['state']}", (10, 70), text_color=state_color)
+            if analysis_data.get('state') in ["BOTTOM", "LOCKOUT", "TOP_PLANK"]: state_color = (0, 255, 0)
             
-            draw_text_with_background(frame, f"Reps: {analysis_data['rep_count']}", (10, 110), font_scale=1, thickness=2)
+            y_pos = 40
+            draw_text_with_background(frame, f"Exercise: {exercise_name}", (10, y_pos), text_color=(255, 255, 255))
             
+            y_pos += 40
+            draw_text_with_background(frame, f"State: {analysis_data['state']}", (10, y_pos), text_color=state_color)
+            
+            y_pos += 40
+            draw_text_with_background(frame, f"Muscles: {analysis_data.get('target_muscles', 'N/A')}", (10, y_pos), font_scale=0.6, text_color=(255, 150, 0))
+            
+            y_pos += 40
+            draw_text_with_background(frame, f"Total Reps: {analysis_data['rep_count']}", (10, y_pos), font_scale=0.8, thickness=2)
+            
+            y_pos += 35
             c_reps = analysis_data.get('correct_reps', 0)
             i_reps = analysis_data.get('incorrect_reps', 0)
-            cv2.putText(frame, f"Correct: {c_reps}", (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.putText(frame, f"Incorrect: {i_reps}", (150, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            draw_text_with_background(frame, f"Correct: {c_reps}", (10, y_pos), font_scale=0.6, text_color=(0, 255, 0))
+            draw_text_with_background(frame, f"Incorrect: {i_reps}", (160, y_pos), font_scale=0.6, text_color=(0, 0, 255))
             
+            y_pos += 40
             feedback = analysis_data.get('feedback', '')
-            draw_text_with_background(frame, feedback, (10, 180), text_color=(0, 100, 255))
+            if feedback:
+                draw_text_with_background(frame, f"Feedback: {feedback}", (10, y_pos), text_color=(0, 100, 255))
             
-            advice = analysis_data.get('advice', '')
-            if advice:
-                draw_text_with_background(frame, f"Advice: {advice}", (10, 220), text_color=(255, 255, 0), bg_color=(0,0,0))
-
-            if analysis_data.get('valgus_detected', False):
-                draw_text_with_background(frame, "KNEE VALGUS!", (10, 280), text_color=(0, 0, 255), bg_color=(255, 255, 255))
-            
-            view_mode = analysis_data.get('view', 'Unknown')
-            draw_text_with_background(frame, f"View: {view_mode}", (10, 320), text_color=(200, 200, 200))
-            
+            # Display reasons if incorrect
             score = analysis_data.get('last_rep_score', 0)
-            draw_text_with_background(frame, f"Last Score: {score}", (10, 250), 
-                                      text_color=(0, 255, 0) if score > 80 else (0, 0, 255))
+            if score > 0 and score < 70 and analysis_data.get('reasons'): # Updated to 70
+                y_pos += 40
+                for r in analysis_data['reasons'][:2]:
+                    draw_text_with_background(frame, f"Fault: {r}", (10, y_pos), text_color=(0, 0, 255), font_scale=0.5)
+                    y_pos += 25
 
         out.write(frame)
-        
         frame_count += 1
-        if total_frames > 0:
-            progress = frame_count / total_frames
-            progress_bar.progress(progress)
-            status_text.text(f"Processing frame {frame_count}/{total_frames}")
+        if total_frames > 0: progress_bar.progress(frame_count / total_frames)
 
     cap.release()
     out.release()
     progress_bar.empty()
-    status_text.text("Processing complete!")
 
 def main():
-    st.set_page_config(page_title="AI Squat Coach", layout="wide")
+    st.set_page_config(page_title="AI Fitness Coach", layout="wide")
+    st.title("🏋️ AI Fitness Analysis Coach")
     
-    st.title("AI Squat Analysis Coach")
-    st.markdown("""
-    Upload a video of yourself performing squats. The AI will analyze your form, count reps, 
-    and provide specific coaching feedback on depth, knee alignment, and more.
-    """)
+    exercise_type = st.radio("Select Exercise:", ["Auto-Detect", "Squat", "Lunge", "Push-Up", "Deadlift", "Jumping Jacks", "Plank"], horizontal=True)
+    tab1, tab2 = st.tabs(["📹 Upload Video", "🎥 Live Webcam"])
     
-    uploaded_file = st.file_uploader("Upload a video...", type=["mp4", "mov", "avi"])
-    
-    if uploaded_file is not None:
-        # Save uploaded file to temp
-        tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') 
-        tfile.write(uploaded_file.read())
-        tfile.close()
-        
-        st.video(tfile.name)
-        
-        if st.button('Analyze Squats'):
-            output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-            output_path = output_file.name
-            output_file.close() # Close so opencv can write to it
+    with tab1:
+        uploaded_file = st.file_uploader("Upload a video...", type=["mp4", "mov", "avi"])
+        if uploaded_file:
+            tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') 
+            tfile.write(uploaded_file.read())
+            tfile.close()
+            st.video(tfile.name)
             
-            with st.spinner('Analyzing form... (this may take a moment)'):
-                try:
-                    process_video(tfile.name, output_path)
-                    
-                    st.success("Analysis Complete!")
-                    st.header("Analyzed Video")
-                    
-                    # Re-open the file to display it
-                    # Note: Convert to H.264 if needed for browser support, but mp4v often works locally
+            if st.button(f'Analyze {exercise_type}'):
+                output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+                with st.spinner('Analyzing...'):
+                    process_video(tfile.name, output_path, mode=exercise_type)
+                    st.success("Done!")
                     st.video(output_path)
                     
                     # Add Download Button
                     with open(output_path, "rb") as file:
-                        btn = st.download_button(
+                        st.download_button(
                             label="Download Analyzed Video",
                             data=file,
-                            file_name="analyzed_squat.mp4",
+                            file_name=f"analyzed_{exercise_type.lower()}.mp4",
                             mime="video/mp4"
                         )
-                    
-                except Exception as e:
-                    st.error(f"An error occurred: {e}")
-                finally:
-                    # Cleanup
-                    # os.unlink(tfile.name)
-                    # os.unlink(output_path) 
-                    pass
+    
+    with tab2:
+        processors = {
+            "Auto-Detect": AutoDetectVideoProcessor,
+            "Squat": SquatVideoProcessor,
+            "Lunge": LungeVideoProcessor,
+            "Push-Up": PushUpVideoProcessor,
+            "Deadlift": DeadliftVideoProcessor,
+            "Jumping Jacks": JumpingJacksVideoProcessor,
+            "Plank": PlankVideoProcessor
+        }
+        webrtc_streamer(
+            key=f"{exercise_type.lower()}-analysis",
+            video_processor_factory=processors[exercise_type],
+            rtc_configuration=RTC_CONFIGURATION,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
 
 if __name__ == '__main__':
     main()

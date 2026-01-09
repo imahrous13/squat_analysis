@@ -3,3 +3,6 @@ mediapipe
 numpy
 pandas
 streamlit
+streamlit-webrtc
+av
+ultralytics
