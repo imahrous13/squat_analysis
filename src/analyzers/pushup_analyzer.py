@@ -17,7 +17,7 @@ class PushUpAnalyzer:
         self.config = {
             "top_elbow_angle": 160,    
             "descend_threshold": 150,  
-            "bottom_elbow_angle": 90, # Tightened from 100
+            "bottom_elbow_angle": 90, 
             "hysteresis": 8,
             "smoothing_alpha": 0.2,   
             "sag_threshold_norm": 0.06,
@@ -65,17 +65,13 @@ class PushUpAnalyzer:
         self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
 
         # Hip Alignment Check (Body Rigidity)
-        # Calculate vertical distance from hips to the line between shoulders and ankles
         def get_body_alignment(s, h, a):
-            # Vector shoulder to ankle
             v_sa = (a[0] - s[0], a[1] - s[1])
-            # Vector shoulder to hip
             v_sh = (h[0] - s[0], h[1] - s[1])
-            # Cross product to find perpendicular distance
             sa_len = (v_sa[0]**2 + v_sa[1]**2)**0.5
             if sa_len == 0: return 0
             dist = (v_sh[0] * v_sa[1] - v_sh[1] * v_sa[0]) / sa_len
-            return dist / sa_len # Normalized distance
+            return dist / sa_len 
 
         alignment = get_body_alignment(l_s if active_side=="LEFT" else r_s, 
                                        l_h if active_side=="LEFT" else r_h, 
@@ -86,7 +82,7 @@ class PushUpAnalyzer:
         elif alignment < -self.config["pike_threshold_norm"]:
             self.fault_counts["PIKE_HIPS"] += 1
 
-        # State Machine with Transition Thresholds
+        # State Machine
         def transition_to(new_state):
             if self.state != new_state:
                 self.state_counter += 1
@@ -111,7 +107,6 @@ class PushUpAnalyzer:
         elif self.state == "ASCENDING":
             if elbow_angle > self.config["top_elbow_angle"]:
                 if transition_to("TOP_PLANK"):
-                    # Only count if there was significant movement
                     if (self.config["top_elbow_angle"] - self.min_elbow_angle) > 30:
                         self.rep_count += 1
                         self._score_rep()
@@ -133,29 +128,36 @@ class PushUpAnalyzer:
         score = 100
         faults = []
         
-        # 1. Depth
-        if self.min_elbow_angle > 95:
-            score -= 35
+        # 1. Depth (Rule 5)
+        if self.min_elbow_angle > 100: 
+            score -= 30 
             faults.append("Too shallow")
+        elif self.min_elbow_angle > 90:
+            score -= 10
+            faults.append("Slightly shallow")
             
-        # 2. Body Rigidity (Sagging/Pike)
-        if self.fault_counts["SAGGING_HIPS"] > 10:
-            score -= 20
+        # 2. Body Rigidity (Rule 2/3)
+        if self.fault_counts["SAGGING_HIPS"] > 15: 
+            score -= 15 
             faults.append("Sagging hips")
-        if self.fault_counts["PIKE_HIPS"] > 10:
-            score -= 20
+        if self.fault_counts["PIKE_HIPS"] > 15: 
+            score -= 15 
             faults.append("Pike hips (butt up)")
             
-        if score >= 75:
+        # Result
+        if score >= 70: 
             self.correct_reps += 1
-            self.feedback = "Great rep!"
-            self.advice = "Keep your core tight."
+            self.feedback = f"Rep {self.rep_count}: Correct!"
+            self.advice = "Great depth and rigidity!"
         else:
             self.incorrect_reps += 1
-            self.feedback = f"Incorrect: {', '.join(faults)}"
-            self.advice = "Focus on a straight body line and full depth."
-            
-        self.current_rep_quality = {"score": score, "faults": faults}
+            self.feedback = f"Rep {self.rep_count}: Incorrect - {', '.join(faults)}"
+            self.advice = "Focus on full range of motion and keeping your core tight."
+
+        self.current_rep_quality = {
+            "score": max(0, score),
+            "faults": faults
+        }
 
     def _empty_result(self, msg="No Pose"):
         return {"state": "UNKNOWN", "rep_count": self.rep_count, "feedback": msg, "advice": "", "correct_reps": self.correct_reps, "incorrect_reps": self.incorrect_reps, "target_muscles": "Chest, Triceps, Shoulders"}

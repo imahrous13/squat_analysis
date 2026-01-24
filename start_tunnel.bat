@@ -6,4 +6,4 @@ echo Look for the https://....trycloudflare.com URL below:
 echo ================================================================
 echo.
 
-cloudflared tunnel --url http://localhost:8503
+cloudflared tunnel --url http://localhost:8501

@@ -32,17 +32,38 @@ class JumpingJacksAnalyzer:
         hands_up = l_wrist[1] < l_sh[1] and r_wrist[1] < r_sh[1]
         feet_apart = abs(l_ank[0] - r_ank[0]) > (abs(l_sh[0] - r_sh[0]) * 1.5)
 
+        # Check Elbow extension for "Good Form"
+        # Calculate elbow angles
+        l_elbow_angle = calculate_angle(l_sh, get_p(self.mp_pose.PoseLandmark.LEFT_ELBOW), l_wrist)
+        r_elbow_angle = calculate_angle(r_sh, get_p(self.mp_pose.PoseLandmark.RIGHT_ELBOW), r_wrist)
+        avg_elbow_angle = (l_elbow_angle + r_elbow_angle) / 2
+
         if self.state == "START":
             if hands_up and feet_apart:
                 self.state = "UP"
                 self.feedback = "Arms up!"
+                # Store form metric at peak (simplified: check when entering UP state)
+                self.current_rep_quality['elbow_angle'] = avg_elbow_angle
+                
         elif self.state == "UP":
+            # Update quality metric while in UP state (capture max extension if possible, or just current)
+            self.current_rep_quality['elbow_angle'] = max(self.current_rep_quality.get('elbow_angle', 0), avg_elbow_angle)
+            
             if not hands_up and not feet_apart:
                 self.rep_count += 1
-                self.correct_reps += 1 # Jumping jacks are hard to do "wrong" in this basic logic
+                
+                # Verify Form
+                elbow_thresh = 140 # Arms should be relatively straight
+                if self.current_rep_quality.get('elbow_angle', 180) > elbow_thresh:
+                    self.correct_reps += 1
+                    self.feedback = "Good Rep!"
+                    self.advice = "Keep up the pace."
+                else:
+                    self.incorrect_reps += 1
+                    self.feedback = "Lazy Arms!"
+                    self.advice = "Straighten your arms fully at the top."
+                
                 self.state = "START"
-                self.feedback = "Rep counted!"
-                self.advice = "Keep a steady rhythm."
 
         return {
             "state": self.state,
