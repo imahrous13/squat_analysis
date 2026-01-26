@@ -320,9 +320,12 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
         
     exercise_detector = ExerciseDetector()
     analyzers = {
-        "Squat": SquatAnalyzer, "Push-Up": PushUpAnalyzer, "Bench Press": BenchPressAnalyzer,
+        "Squat": SquatAnalyzer, "Push-Up": PushUpAnalyzer, 
+        "Bench Press": BenchPressAnalyzer, "Seated Bench Press": BenchPressAnalyzer,
         "Deadlift": DeadliftAnalyzer, "Lunge": LungeAnalyzer, 
-        "Jumping Jacks": JumpingJacksAnalyzer, "Plank": PlankAnalyzer
+        "Jumping Jacks": JumpingJacksAnalyzer, "Plank": PlankAnalyzer,
+        "Chest Fly": ChestFlyAnalyzer, "Seated Chest Fly": ChestFlyAnalyzer,
+        "Dips": DipsAnalyzer, "Seated Dips": DipsAnalyzer
     }
     
     if mode == "Auto-Detect":
@@ -338,10 +341,6 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
          analyzer = DipsAnalyzer(variant="seated")
          exercise_name = mode
     else:
-        analyzers.update({
-            "Chest Fly": ChestFlyAnalyzer,
-            "Dips": DipsAnalyzer
-        })
         analyzer = analyzers.get(mode, SquatAnalyzer)()
         exercise_name = mode
     
