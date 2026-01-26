@@ -44,17 +44,17 @@ class BenchPressAnalyzer:
         
         # Base configs
         self.config = {
-            "extended_elbow_angle": 155,      # Relaxed from 160
+            "extended_elbow_angle": 155,
             "descend_threshold": 150,
-            "bottom_elbow_angle": 100,        # Relaxed from 90 to catch reps that don't go super deep/camera angles
-            "min_rom": 45,                    # Relaxed ROM requirement
-            "hysteresis": 10,
-            "smoothing_alpha": 0.3,
-            "max_elbow_flare": 85,
-            "max_asymmetry": 20,
-            "max_hip_lift_norm": 0.15,        # Relaxed from 0.08 to 0.15
-            "bounce_velocity_thresh": 15,
-            "fault_frame_thresh": 10
+            "bottom_elbow_angle": 110,        # Relaxed from 100 to catch shallower reps
+            "min_rom": 35,                    # Relaxed ROM requirement from 45
+            "hysteresis": 12,
+            "smoothing_alpha": 0.35,
+            "max_elbow_flare": 75,            # Tightened back to 75 to catch "very wide" elbows
+            "max_asymmetry": 25,              # Relaxed from 20
+            "max_hip_lift_norm": 0.18,        # Slightly more lenient
+            "bounce_velocity_thresh": 20,
+            "fault_frame_thresh": 20          # More frames needed to confirm a fault
         }
         
         # Adjust for Seated Variant (Machine/Cable) based on Prompt
@@ -167,7 +167,20 @@ class BenchPressAnalyzer:
         else:
             self.fault_counts["ASYMMETRY"] = max(0, self.fault_counts["ASYMMETRY"] - 1)
         
-        # 2. Shoulder Shrug (Seated Variant - Prompt: Shoulder Y rises)
+        # 2. Elbow Flare (Prompt: shoulders wide open / elbows perpendicular to torso)
+        # Calculate angle between torso (hip-shoulder) and upper arm (shoulder-elbow)
+        l_shoulder_flare = calculate_angle(l_hip, l_shoulder, l_elbow)
+        r_shoulder_flare = calculate_angle(r_hip, r_shoulder, r_elbow)
+        
+        # We only check for flare when descending or in bottom (when power is needed)
+        # Threshold: 85 degrees (almost perpendicular)
+        if self.state in ["DESCENDING", "BOTTOM", "ASCENDING"]:
+            if l_shoulder_flare > self.config["max_elbow_flare"] or r_shoulder_flare > self.config["max_elbow_flare"]:
+                self.fault_counts["ELBOW_FLARE"] += 1
+            else:
+                self.fault_counts["ELBOW_FLARE"] = max(0, self.fault_counts["ELBOW_FLARE"] - 1)
+
+        # 3. Shoulder Shrug (Seated Variant - Prompt: Shoulder Y rises)
         if self.variant == "seated":
             current_shoulder_y = (l_shoulder[1] + r_shoulder[1]) / 2
             
@@ -286,18 +299,24 @@ class BenchPressAnalyzer:
             score -= 20
             faults.append("Uneven press (Asymmetry)")
         
-        # 3. Shoulder Shrug (Seated)
-        if self.variant == "seated" and self.fault_counts["SHOULDER_SHRUG"] > 8:
+        # 3. Elbow Flare
+        if self.fault_counts["ELBOW_FLARE"] > self.config["fault_frame_thresh"]:
+            score -= 45 # Increased to 45 to ensure it fails the rep (since pass score is 60)
+            faults.append("Elbow Flare (Tuck elbows)")
+        
+        # 4. Shoulder Shrug (Seated)
+        if self.variant == "seated" and self.fault_counts["SHOULDER_SHRUG"] > 12:
             score -= 15
             faults.append("Shoulder Shrug (Keep shoulders down)")
             
-        # 4. Hip Lift (Standard)
-        if self.variant == "standard" and self.fault_counts["HIP_LIFT"] > 25: # Relaxed from 10
-            score -= 20
+        # 5. Hip Lift (Standard)
+        if self.variant == "standard" and self.fault_counts["HIP_LIFT"] > 30: 
+            score -= 15 # Reduced from 20
             faults.append("Hips lifted off bench")
-
+            
         # Determine Status
-        if score >= 70:
+        # PASSING score lowered from 70 to 60 for more fairness
+        if score >= 60:
             self.correct_reps += 1
             self.feedback = f"Rep {self.rep_count}: Correct!"
             self.advice = "Good form!"
@@ -308,7 +327,7 @@ class BenchPressAnalyzer:
         
         self.current_rep_quality = {
             "score": max(0, score),
-            "status": "correct" if score >= 70 else "incorrect",
+            "status": "correct" if score >= 60 else "incorrect",
             "reasons": faults
         }
     
@@ -318,6 +337,7 @@ class BenchPressAnalyzer:
             "Partial ROM (Too shallow)": "Go deeper! Elbows should bend to ~100 degrees.",
             "Slightly shallow": "A bit lower for full chest activation.",
             "Uneven press (Asymmetry)": "Push evenly with both arms.",
+            "Elbow Flare (Tuck elbows)": "Tuck your elbows to ~45-75 degrees to protect your shoulders.",
             "Shoulder Shrug (Keep shoulders down)": "Relax your shoulders. Don't shrug during the press.",
             "Hips lifted off bench": "Keep your hips glued to the bench."
         }

@@ -4,8 +4,9 @@ import mediapipe as mp
 from ultralytics import YOLO
 
 class RoiManager:
-    def __init__(self, padding_pct=0.2):
+    def __init__(self, padding_pct=0.2, smooth_factor=0.3):
         self.padding_pct = padding_pct
+        self.smooth_factor = smooth_factor
         self.last_roi = None 
         
     def get_roi(self, box, frame_w, frame_h):
@@ -16,11 +17,20 @@ class RoiManager:
         pad_w = int(w * self.padding_pct)
         pad_h = int(h * self.padding_pct)
         
-        nx1 = max(0, int(x1 - pad_w))
-        ny1 = max(0, int(y1 - pad_h))
-        nx2 = min(frame_w, int(x2 + pad_w))
-        ny2 = min(frame_h, int(y2 + pad_h))
+        target_x1 = max(0, int(x1 - pad_w))
+        target_y1 = max(0, int(y1 - pad_h))
+        target_x2 = min(frame_w, int(x2 + pad_w))
+        target_y2 = min(frame_h, int(y2 + pad_h))
         
+        # Apply EMA Smoothing to ROI coordinates to prevent jitter
+        if self.last_roi is not None:
+            nx1 = int(self.last_roi[0] * (1 - self.smooth_factor) + target_x1 * self.smooth_factor)
+            ny1 = int(self.last_roi[1] * (1 - self.smooth_factor) + target_y1 * self.smooth_factor)
+            nx2 = int(self.last_roi[2] * (1 - self.smooth_factor) + target_x2 * self.smooth_factor)
+            ny2 = int(self.last_roi[3] * (1 - self.smooth_factor) + target_y2 * self.smooth_factor)
+        else:
+            nx1, ny1, nx2, ny2 = target_x1, target_y1, target_x2, target_y2
+
         self.last_roi = (nx1, ny1, nx2, ny2)
         return (nx1, ny1, nx2, ny2)
 
@@ -56,8 +66,8 @@ class HybridPoseEstimator:
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=0, # Use Lite model for speed
-            smooth_landmarks=False, # Disable smoothing for lower latency
+            model_complexity=1, # Use Balanced model for significantly better stability
+            smooth_landmarks=True, # Enable smoothing to reduce jitter
             min_detection_confidence=min_pose_conf,
             min_tracking_confidence=min_pose_conf
         )
@@ -79,16 +89,13 @@ class HybridPoseEstimator:
         self.frame_counter += 1
         
         # Determine if we should run YOLO
-        run_yolo = (self.frame_counter % self.yolo_interval == 0) or (self.locked_track_id is None)
+        # Increase YOLO frequency to every 3 frames for maximum responsiveness
+        run_yolo = (self.frame_counter % 3 == 0) or (self.locked_track_id is None)
         
         best_box = None
         
         if run_yolo:
-            # 1. YOLO Track
-            # Enable persistence to get track_ids
-            # Note: We must run track() to keep the tracker alive, but maybe we can skip inference?
-            # Ultralytics track() does inference. 
-            # If we skip, we rely on ROI.
+            # 1. YOLO Track with Persistence
             results = self.yolo.track(frame, persist=True, verbose=False, classes=[0], conf=self.min_det_conf)
             
             best_box = None
@@ -96,49 +103,61 @@ class HybridPoseEstimator:
             
             if results and results[0].boxes:
                 all_boxes = results[0].boxes
-                frame_center = np.array([w/2, h/2])
                 
                 # Candidate Logic
                 candidates = []
                 
                 for box in all_boxes:
-                    # box has .id (track_id), .xyxy, .conf
-                    if box.id is None: continue # Skip untracked objects
+                    if box.id is None: continue 
                     
                     tid = int(box.id[0].item())
                     coords = box.xyxy[0].cpu().numpy()
                     x1, y1, x2, y2 = coords
                     
-                    # Check if this is our locked guy
-                    if self.locked_track_id is not None and tid == self.locked_track_id:
-                        best_box = coords
-                        current_id_found = True
-                        self.missed_track_frames = 0
-                        break
+                    # Selection Stats
+                    width = x2 - x1
+                    height = y2 - y1
+                    area = width * height
                     
-                    # Otherwise collect stats for selection
-                    area = (x2 - x1) * (y2 - y1)
-                    box_center = np.array([(x1+x2)/2, (y1+y2)/2])
-                    dist_to_center = np.linalg.norm(box_center - frame_center)
+                    # Store candidate info
+                    # Score is now PURELY Area-based to prioritize the "Bigger Person" (closest to camera)
+                    # We normalize area by frame size for consistent scoring
+                    score = (area / (w * h)) * 100
                     
                     candidates.append({
                         "box": coords,
                         "id": tid,
-                        "score": area - (dist_to_center * 2) # Area weighted heavily against distance
+                        "area": area,
+                        "score": score
                     })
+
+                # If we have a locked ID, find it among candidates
+                if self.locked_track_id is not None:
+                    locked_candidate = next((c for c in candidates if c["id"] == self.locked_track_id), None)
+                    
+                    if locked_candidate:
+                        # Check if there is now a SIGNIFICANTLY bigger person (> 30% larger area)
+                        # This allows the tracker to switch if the main subject changes or if it locked onto a background person initially
+                        best_overall = max(candidates, key=lambda x: x["area"])
+                        if best_overall["area"] > locked_candidate["area"] * 1.3:
+                            self.locked_track_id = best_overall["id"]
+                            best_box = best_overall["box"]
+                        else:
+                            best_box = locked_candidate["box"]
+                        
+                        current_id_found = True
+                        self.missed_track_frames = 0
                 
-                # If we didn't find our locked ID (or don't have one)
+                # If no current lock or lost lock, pick the LARGEST person
                 if not current_id_found:
                     if self.locked_track_id is not None:
-                        # We lost him
                         self.missed_track_frames += 1
                         if self.missed_track_frames > self.max_missed_frames:
-                            self.locked_track_id = None # Reset lock
+                            self.locked_track_id = None
                             
-                    # If still no lock, pick best new candidate
                     if self.locked_track_id is None and candidates:
-                        # Sort by score (Area - CenterDist)
-                        candidates.sort(key=lambda x: x["score"], reverse=True)
+                        # Pick the absolute biggest person (highest area)
+                        candidates.sort(key=lambda x: x["area"], reverse=True)
                         best_candidate = candidates[0]
                         self.locked_track_id = best_candidate["id"]
                         best_box = best_candidate["box"]

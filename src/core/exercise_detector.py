@@ -6,7 +6,7 @@ class ExerciseDetector:
         self.window_size = window_size
         self.buffer = deque(maxlen=window_size)
         self.confidence_votes = deque(maxlen=45)  # Reduced from 60 to 45
-        self.exercises = ["Squat", "Deadlift", "Push-Up", "Bench Press", "Lunge", "Jumping Jacks", "Plank"]
+        self.exercises = ["Squat", "Deadlift", "Push-Up", "Bench Press", "Seated Bench Press", "Lunge", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips"]
         self.last_guess = None  # Track last guess for debugging
         
     def add_frame(self, landmarks):
@@ -29,9 +29,23 @@ class ExerciseDetector:
         elbow_y = [np.mean([lm[13].y, lm[14].y]) for lm in self.buffer]
         shoulder_y = [np.mean([lm[11].y, lm[12].y]) for lm in self.buffer]
         
-        hip_rom = max(hip_y) - min(hip_y)
-        elbow_rom = max(elbow_y) - min(elbow_y)
-        shoulder_rom = max(shoulder_y) - min(shoulder_y)
+        hip_x = [np.mean([lm[23].x, lm[24].x]) for lm in self.buffer]
+        elbow_x = [np.mean([lm[13].x, lm[14].x]) for lm in self.buffer]
+        shoulder_x = [np.mean([lm[11].x, lm[12].x]) for lm in self.buffer]
+        
+        hip_rom_y = max(hip_y) - min(hip_y)
+        elbow_rom_y = max(elbow_y) - min(elbow_y)
+        shoulder_rom_y = max(shoulder_y) - min(shoulder_y)
+
+        hip_rom_x = max(hip_x) - min(hip_x)
+        elbow_rom_x = max(elbow_x) - min(elbow_x)
+        shoulder_rom_x = max(shoulder_x) - min(shoulder_x)
+        
+        # Combined ROM for more robust movement detection
+        hip_rom = max(hip_rom_y, hip_rom_x * 0.7) # X-movement weighted slightly less for trunk
+        elbow_rom = max(elbow_rom_y, elbow_rom_x)
+        shoulder_rom = max(shoulder_rom_y, shoulder_rom_x)
+        combined_elbow_rom = elbow_rom # Consistent alias for exercise heuristics
         
         # Reduced movement threshold from 15% to 10% to catch smaller movements (like push-ups)
         # Include shoulder ROM for push-up detection
@@ -75,6 +89,10 @@ class ExerciseDetector:
         
         current_guess = None
         
+        # PRIORITY CHECK: Deadlift High ROM
+        # Used to distinguish from squat
+        hip_rom_val = max(hip_y) - min(hip_y) # Pure vertical ROM for hips
+
         # PRIORITY CHECK: Deadlift Detection (Before Horizontal Check)
         # Deadlifts have horizontal torso but hands are LOW (near ground), not at shoulder level
         # This prevents deadlifts from being misclassified as planks
@@ -102,7 +120,7 @@ class ExerciseDetector:
         # 5. Body is NOT in horizontal plank position (horizontal_ratio < 0.5)
         if (hands_below_hips_ratio > 0.70 and 
             avg_hip_height < 0.75 and 
-            hip_rom > 0.12 and 
+            hip_rom_val > 0.12 and 
             vertical_ratio > 0.40 and
             horizontal_ratio < 0.5):  # NOT horizontal like push-up
             current_guess = "Deadlift"
@@ -121,7 +139,7 @@ class ExerciseDetector:
                 body_y_diff = abs(lm[11].y - lm[23].y)
                 body_x_diff = abs(lm[11].x - lm[23].x)
                 return body_x_diff > body_y_diff
-
+            
             torso_horizontal_frames = [is_torso_horizontal(lm) for lm in self.buffer]
             torso_horizontal_ratio = sum(torso_horizontal_frames) / len(torso_horizontal_frames)
 
@@ -161,14 +179,14 @@ class ExerciseDetector:
                 # - Wrists consistently ABOVE shoulders (relaxed to >40%) = supine position
                 # - Elbow movement (pressing motion)
                 # - Hands relatively close to shoulders
-                if wrists_above_ratio > 0.40 and (elbow_rom > 0.08 or shoulder_rom > 0.08):
+                if wrists_above_ratio > 0.40 and (elbow_rom_y > 0.08 or shoulder_rom_y > 0.08):
                     current_guess = "Bench Press"
                         
                 # Push-up indicators:
                 # - Elbow movement OR shoulder movement (relaxed thresholds)
                 # - Hands relatively close to shoulders (< 0.50 normalized distance - relaxed from 0.45)
                 # - Wrists NOT above shoulders (prone position)
-                elif (elbow_rom > 0.06 or shoulder_rom > 0.06 or shoulder_rom_std > 0.015) and avg_hand_shoulder_dist < 0.50:
+                elif (elbow_rom_y > 0.06 or shoulder_rom_y > 0.06 or shoulder_rom_std > 0.015) and avg_hand_shoulder_dist < 0.50:
                     current_guess = "Push-Up"
                 else:
                     current_guess = "Plank"
@@ -180,9 +198,9 @@ class ExerciseDetector:
             ankle_y_avg = np.mean([np.mean([lm[27].y, lm[28].y]) for lm in self.buffer])
             
             # Check for Seated Bench Press (Machine) (Vertical Body + Hands at Chest Level)
-            # 1. Body is vertical (Shoulders above Hips)
-            # Relaxed threshold to 0.15 to account for partial visibility or tighter framing
-            is_vertical = hip_y_avg > shoulder_y_avg + 0.15
+            # 1. Body is vertical (Shoulder to Hip Y-difference is significant)
+            # Relaxed threshold to 0.12 to account for partial visibility or tighter framing
+            is_vertical_torso = abs(shoulder_y_avg - hip_y_avg) > 0.12
             
             # 2. Hands are in CHEST ZONE (between slightly above shoulders and hips)
             # NOT above head (Shoulder Press) and NOT below hips (Deadlift)
@@ -190,13 +208,25 @@ class ExerciseDetector:
             wrist_y_avg = np.mean([np.mean([lm[15].y, lm[16].y]) for lm in self.buffer])
             # Hands can be slightly above shoulder (top of press) but mostly below
             # Hands must be above hips
-            hands_in_chest_zone = (wrist_y_avg > shoulder_y_avg - 0.1) and (wrist_y_avg < hip_y_avg)
+            hands_in_chest_zone = (wrist_y_avg > shoulder_y_avg - 0.12) and (wrist_y_avg < hip_y_avg + 0.1)
             
-            # 3. Pushing movement (Elbows extend)
-            elbow_rom = max(elbow_y) - min(elbow_y)
+            # SEATED PRESS vs FLY DISTINCTION
+            if is_vertical_torso and hands_in_chest_zone:
+                # 1. CHEST FLY (Hand-to-Hand distance changes significantly)
+                if arm_spread_std > 0.07:
+                    # Seated (Butterfly Machine) has almost ZERO hip vertical movement
+                    if hip_rom_y < 0.04 and horizontal_ratio < 0.2:
+                        current_guess = "Seated Chest Fly"
+                    else:
+                        current_guess = "Chest Fly"
+                
+                # 2. SEATED BENCH PRESS (Hand-to-Hand distance remains stable)
+                elif combined_elbow_rom > 0.08 and arm_spread_std < 0.05:
+                    current_guess = "Seated Bench Press"
             
-            if is_vertical and hands_in_chest_zone and elbow_rom > 0.08:
-                current_guess = "Seated Bench Press"
+            # DIPS - Vertical movement of body with hands near HIPS
+            elif is_vertical_torso and shoulder_rom_y > 0.08 and hands_below_hips_ratio > 0.6:
+                current_guess = "Dips"
             
             elif abs(shoulder_y_avg - ankle_y_avg) > 0.2:
                 # Improved Lunge Detection: Check for asymmetric leg movement

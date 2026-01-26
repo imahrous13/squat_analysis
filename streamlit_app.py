@@ -10,6 +10,7 @@ import av
 
 # Internal imports
 from src.core.movenet_pose import MoveNetEstimator as PoseDetector
+from src.core.hybrid_pose import HybridPoseEstimator
 from src.core.exercise_detector import ExerciseDetector
 from src.analyzers.squat_analyzer import SquatAnalyzer
 from src.analyzers.pushup_analyzer import PushUpAnalyzer
@@ -18,6 +19,8 @@ from src.analyzers.deadlift_analyzer import DeadliftAnalyzer
 from src.analyzers.lunge_analyzer import LungeAnalyzer
 from src.analyzers.jumping_jacks_analyzer import JumpingJacksAnalyzer
 from src.analyzers.plank_analyzer import PlankAnalyzer
+from src.analyzers.chest_fly_analyzer import ChestFlyAnalyzer
+from src.analyzers.dips_analyzer import DipsAnalyzer
 from src.core.utils import draw_text_with_background, get_landmark_pixel
 
 # RTC Configuration for WebRTC
@@ -26,8 +29,17 @@ RTC_CONFIGURATION = RTCConfiguration(
 )
 
 class BaseVideoProcessor(VideoProcessorBase):
-    def __init__(self, analyzer_class, recording_path=None, **analyzer_args):
-        self.detector = PoseDetector()
+    def __init__(self, analyzer_class, recording_path=None, use_hybrid=False, **analyzer_args):
+        if use_hybrid:
+            # Check if model exists, if not warn/fallback (though we downloaded it)
+            if os.path.exists('yolov8n.pt'):
+                self.detector = HybridPoseEstimator(model_path='yolov8n.pt')
+            else:
+                self.detector = PoseDetector()
+                print("Warning: yolov8n.pt not found, falling back to Standard Pose.")
+        else:
+            self.detector = PoseDetector()
+            
         self.analyzer = analyzer_class(**analyzer_args) if analyzer_class else None
         self.exercise_name = analyzer_class.__name__.replace('Analyzer', '') if analyzer_class else "Detecting..."
         self.exercise_detector = ExerciseDetector()
@@ -64,11 +76,17 @@ class BaseVideoProcessor(VideoProcessorBase):
                         "Bench Press": BenchPressAnalyzer, "Seated Bench Press": BenchPressAnalyzer,
                         "Deadlift": DeadliftAnalyzer,
                         "Lunge": LungeAnalyzer, "Jumping Jacks": JumpingJacksAnalyzer,
-                        "Plank": PlankAnalyzer
+                        "Plank": PlankAnalyzer,
+                        "Chest Fly": ChestFlyAnalyzer, "Seated Chest Fly": ChestFlyAnalyzer,
+                        "Dips": DipsAnalyzer, "Seated Dips": DipsAnalyzer
                     }
 
                     if detected == "Seated Bench Press":
                         self.analyzer = BenchPressAnalyzer(variant="seated")
+                    elif detected == "Seated Chest Fly":
+                        self.analyzer = ChestFlyAnalyzer(variant="seated")
+                    elif detected == "Seated Dips":
+                        self.analyzer = DipsAnalyzer(variant="seated")
                     elif detected in analyzers:
                          self.analyzer = analyzers[detected]()
                     
@@ -211,7 +229,7 @@ class BaseVideoProcessor(VideoProcessorBase):
         return lines
 
 class SquatVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None): super().__init__(SquatAnalyzer, recording_path)
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(SquatAnalyzer, recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
         for side in [mp.solutions.pose.PoseLandmark.LEFT_KNEE, mp.solutions.pose.PoseLandmark.RIGHT_KNEE]:
             pos = get_landmark_pixel(landmarks[side.value], w, h)
@@ -220,7 +238,7 @@ class SquatVideoProcessor(BaseVideoProcessor):
                 cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
 class PushUpVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None): super().__init__(PushUpAnalyzer, recording_path)
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(PushUpAnalyzer, recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
         angle = analysis_data.get('elbow_angle', 0)
         if angle > 0:
@@ -231,10 +249,10 @@ class PushUpVideoProcessor(BaseVideoProcessor):
             cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
 class DeadliftVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None): super().__init__(DeadliftAnalyzer, recording_path)
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(DeadliftAnalyzer, recording_path, use_hybrid)
 
 class LungeVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None): super().__init__(LungeAnalyzer, recording_path)
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(LungeAnalyzer, recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
         lead = analysis_data.get('lead_leg')
         if lead:
@@ -244,13 +262,13 @@ class LungeVideoProcessor(BaseVideoProcessor):
             cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
 class JumpingJacksVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None): super().__init__(JumpingJacksAnalyzer, recording_path)
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(JumpingJacksAnalyzer, recording_path, use_hybrid)
 
 class PlankVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None): super().__init__(PlankAnalyzer, recording_path)
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(PlankAnalyzer, recording_path, use_hybrid)
 
 class BenchPressVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None): super().__init__(BenchPressAnalyzer, recording_path, variant="standard")
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(BenchPressAnalyzer, recording_path, use_hybrid, variant="standard")
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
         angle = analysis_data.get('elbow_angle', 0)
         if angle > 0:
@@ -261,15 +279,28 @@ class BenchPressVideoProcessor(BaseVideoProcessor):
             cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
 class SeatedBenchPressVideoProcessor(BenchPressVideoProcessor):
-    def __init__(self, recording_path=None): 
-        BaseVideoProcessor.__init__(self, BenchPressAnalyzer, recording_path, variant="seated")
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        # Call Base init directly to pass variant="seated"
+        BaseVideoProcessor.__init__(self, BenchPressAnalyzer, recording_path, use_hybrid, variant="seated")
+
+class ChestFlyVideoProcessor(BaseVideoProcessor):
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(ChestFlyAnalyzer, recording_path, use_hybrid, variant="standing")
+
+class SeatedChestFlyVideoProcessor(BaseVideoProcessor):
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(ChestFlyAnalyzer, recording_path, use_hybrid, variant="seated")
+
+class DipsVideoProcessor(BaseVideoProcessor):
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(DipsAnalyzer, recording_path, use_hybrid, variant="normal")
+
+class SeatedDipsVideoProcessor(BaseVideoProcessor):
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(DipsAnalyzer, recording_path, use_hybrid, variant="seated")
 
 class AutoDetectVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None): super().__init__(None, recording_path)
+    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(None, recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
         pass
 
-def process_video(input_path, output_path, mode="Squat"):
+def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     cap = cv2.VideoCapture(input_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -282,7 +313,11 @@ def process_video(input_path, output_path, mode="Squat"):
         
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
-    detector = PoseDetector()
+    if use_hybrid and os.path.exists('yolov8n.pt'):
+        detector = HybridPoseEstimator(model_path='yolov8n.pt')
+    else:
+        detector = PoseDetector()
+        
     exercise_detector = ExerciseDetector()
     analyzers = {
         "Squat": SquatAnalyzer, "Push-Up": PushUpAnalyzer, "Bench Press": BenchPressAnalyzer,
@@ -296,7 +331,17 @@ def process_video(input_path, output_path, mode="Squat"):
     elif mode == "Seated Bench Press":
          analyzer = BenchPressAnalyzer(variant="seated")
          exercise_name = mode
+    elif mode == "Seated Chest Fly":
+         analyzer = ChestFlyAnalyzer(variant="seated")
+         exercise_name = mode
+    elif mode == "Seated Dips":
+         analyzer = DipsAnalyzer(variant="seated")
+         exercise_name = mode
     else:
+        analyzers.update({
+            "Chest Fly": ChestFlyAnalyzer,
+            "Dips": DipsAnalyzer
+        })
         analyzer = analyzers.get(mode, SquatAnalyzer)()
         exercise_name = mode
     
@@ -319,6 +364,10 @@ def process_video(input_path, output_path, mode="Squat"):
                     exercise_name = detected
                     if detected == "Seated Bench Press":
                         analyzer = BenchPressAnalyzer(variant="seated")
+                    elif detected == "Seated Chest Fly":
+                        analyzer = ChestFlyAnalyzer(variant="seated")
+                    elif detected == "Seated Dips":
+                        analyzer = DipsAnalyzer(variant="seated")
                     elif detected in analyzers:
                         analyzer = analyzers[detected]()
                     
@@ -408,7 +457,10 @@ def main():
     if "webcam_recording" not in st.session_state:
         st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
     
-    exercise_type = st.radio("Select Exercise:", ["Auto-Detect", "Squat", "Lunge", "Push-Up", "Bench Press", "Seated Bench Press", "Deadlift", "Jumping Jacks", "Plank"], horizontal=True)
+    # Hybrid Detection is now enforced by default for maximum accuracy
+    use_hybrid = True 
+    
+    exercise_type = st.radio("Select Exercise:", ["Auto-Detect", "Squat", "Lunge", "Push-Up", "Bench Press", "Seated Bench Press", "Deadlift", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips"], horizontal=True)
     tab1, tab2 = st.tabs(["📹 Upload Video", "🎥 Live Webcam"])
     
     with tab1:
@@ -422,7 +474,7 @@ def main():
             if st.button(f'Analyze {exercise_type}'):
                 output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
                 with st.spinner('Analyzing...'):
-                    process_video(tfile.name, output_path, mode=exercise_type)
+                    process_video(tfile.name, output_path, mode=exercise_type, use_hybrid=use_hybrid)
                     st.success("Done!")
                     st.video(output_path)
                     
@@ -444,14 +496,18 @@ def main():
             "Seated Bench Press": SeatedBenchPressVideoProcessor,
             "Deadlift": DeadliftVideoProcessor,
             "Jumping Jacks": JumpingJacksVideoProcessor,
-            "Plank": PlankVideoProcessor
+            "Plank": PlankVideoProcessor,
+            "Chest Fly": ChestFlyVideoProcessor,
+            "Seated Chest Fly": SeatedChestFlyVideoProcessor,
+            "Dips": DipsVideoProcessor,
+            "Seated Dips": SeatedDipsVideoProcessor
         }
         
         recording_path = st.session_state.webcam_recording
         
         ctx = webrtc_streamer(
             key=f"{exercise_type.lower()}-analysis",
-            video_processor_factory=lambda: processors[exercise_type](recording_path),
+            video_processor_factory=lambda: processors[exercise_type](recording_path, use_hybrid=use_hybrid),
             rtc_configuration=RTC_CONFIGURATION,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
