@@ -46,22 +46,27 @@ class BenchPressAnalyzer:
         self.config = {
             "extended_elbow_angle": 155,
             "descend_threshold": 150,
-            "bottom_elbow_angle": 110,        # Relaxed from 100 to catch shallower reps
-            "min_rom": 35,                    # Relaxed ROM requirement from 45
+            "bottom_elbow_angle": 110,        
+            "min_rom": 35,                    
             "hysteresis": 12,
-            "smoothing_alpha": 0.35,
-            "max_elbow_flare": 75,            # Tightened back to 75 to catch "very wide" elbows
-            "max_asymmetry": 25,              # Relaxed from 20
-            "max_hip_lift_norm": 0.18,        # Slightly more lenient
+            "smoothing_alpha": 0.25, # High stability
+            "max_elbow_flare": 75,            
+            "max_asymmetry": 25,              
+            "max_hip_lift_norm": 0.18,        
             "bounce_velocity_thresh": 20,
-            "fault_frame_thresh": 20          # More frames needed to confirm a fault
+            "fault_frame_thresh": 20,
+            "state_transition_threshold": 5 # Solid filtering
         }
         
-        # Adjust for Seated Variant (Machine/Cable) based on Prompt
+        # Adjust for Seated Variant (Machine/Cable) 
         if self.variant == "seated":
-            self.config["extended_elbow_angle"] = 155  
-            self.config["bottom_elbow_angle"] = 100    
-            self.config["descend_threshold"] = 120     
+            self.config["extended_elbow_angle"] = 145  # Achievable lockout
+            self.config["bottom_elbow_angle"] = 128    # Achievable depth
+            self.config["descend_threshold"] = 138     
+            self.config["min_rom"] = 15                
+            self.config["hysteresis"] = 6              
+            self.config["state_transition_threshold"] = 2 
+            self.config["smoothing_alpha"] = 0.4       
             
         self.prev_vals = {}
         self.base_shoulder_y = None  # Reference for shrug detection
@@ -82,7 +87,7 @@ class BenchPressAnalyzer:
         if key not in self.prev_vals:
             self.prev_vals[key] = new_val
             return new_val
-        alpha = self.config["smoothing_alpha"]
+        alpha = self.config.get("smoothing_alpha", 0.3)
         smooth = alpha * new_val + (1 - alpha) * self.prev_vals[key]
         self.prev_vals[key] = smooth
         return smooth
@@ -115,11 +120,19 @@ class BenchPressAnalyzer:
         l_elbow_angle = calculate_angle(l_shoulder, l_elbow, l_wrist)
         r_elbow_angle = calculate_angle(r_shoulder, r_elbow, r_wrist)
         
-        # Use primary arm based on visibility
-        primary_elbow_angle = l_elbow_angle if active_side == "LEFT" else r_elbow_angle
+        # Use more stable average angle if both arms are reasonably visible
+        l_vis = landmarks[lm.LEFT_SHOULDER.value].visibility
+        r_vis = landmarks[lm.RIGHT_SHOULDER.value].visibility
         
+        if l_vis > 0.5 and r_vis > 0.5:
+            raw_angle = (l_elbow_angle + r_elbow_angle) / 2
+            active_side = "BOTH (Average)"
+        else:
+            raw_angle = l_elbow_angle if l_vis > r_vis else r_elbow_angle
+            active_side = "LEFT" if l_vis > r_vis else "RIGHT"
+            
         # Smooth the angle
-        elbow_angle = self._ema_smooth("elbow_angle", primary_elbow_angle)
+        elbow_angle = self._ema_smooth("elbow_angle", raw_angle)
         
         # Track min/max
         self.min_elbow_angle = min(self.min_elbow_angle, elbow_angle)
@@ -152,7 +165,7 @@ class BenchPressAnalyzer:
             "last_rep_score": self.current_rep_quality.get("score", 0),
             "reasons": self.current_rep_quality.get("reasons", []),
             "target_muscles": f"Chest, Triceps, Shoulders ({self.variant.title()})",
-            "view": f"Side ({active_side})",
+            "view": f"{active_side}",
             "elbow_angle": int(elbow_angle)
         }
     
@@ -240,7 +253,7 @@ class BenchPressAnalyzer:
         def transition_to(new_state):
             if self.state != new_state:
                 self.state_counter += 1
-                if self.state_counter >= self.state_transition_threshold:
+                if self.state_counter >= self.config["state_transition_threshold"]:
                     self.state = new_state
                     self.state_counter = 0
                     return True

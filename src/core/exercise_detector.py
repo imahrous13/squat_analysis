@@ -2,10 +2,10 @@ import numpy as np
 from collections import deque, Counter
 
 class ExerciseDetector:
-    def __init__(self, window_size=90): # Reduced from 120 to 90 for faster detection (~3 seconds)
+    def __init__(self, window_size=60): # Reduced from 90 to 60 for even faster detection (~2 seconds)
         self.window_size = window_size
         self.buffer = deque(maxlen=window_size)
-        self.confidence_votes = deque(maxlen=45)  # Reduced from 60 to 45
+        self.confidence_votes = deque(maxlen=30)  # Reduced from 45 to 30 for faster voting
         self.exercises = ["Squat", "Deadlift", "Push-Up", "Bench Press", "Seated Bench Press", "Lunge", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips"]
         self.last_guess = None  # Track last guess for debugging
         
@@ -21,7 +21,7 @@ class ExerciseDetector:
             
     def detect(self):
         # Reduced minimum buffer requirement for faster initial detection
-        if len(self.buffer) < int(self.window_size * 0.7):  # 70% of window size
+        if len(self.buffer) < int(self.window_size * 0.5):  # 50% of window size (30 frames)
             return None
         
         # 1. Motion Analysis - More lenient thresholds
@@ -176,19 +176,23 @@ class ExerciseDetector:
                 wrists_above_ratio = sum(wrists_above_shoulders) / len(wrists_above_shoulders)
                 
                 # Bench Press indicators:
-                # - Wrists consistently ABOVE shoulders (relaxed to >40%) = supine position
-                # - Elbow movement (pressing motion)
-                # - Hands relatively close to shoulders
-                if wrists_above_ratio > 0.40 and (elbow_rom_y > 0.08 or shoulder_rom_y > 0.08):
-                    current_guess = "Bench Press"
+                # - Wrists consistently ABOVE shoulders (relaxed to >30%) = supine position
+                # - Even small movement should trigger Bench Press over Plank if wrists are above shoulders
+                if wrists_above_ratio > 0.30:
+                    # If there's some movement, it's definitely Bench Press
+                    if (elbow_rom_y > 0.05 or shoulder_rom_y > 0.05 or shoulder_rom_std > 0.015):
+                        current_guess = "Bench Press"
+                    else:
+                        # Even if static, if wrists are above shoulders, it's a Bench Press setup, not a Plank
+                        current_guess = "Bench Press"
                         
                 # Push-up indicators:
-                # - Elbow movement OR shoulder movement (relaxed thresholds)
-                # - Hands relatively close to shoulders (< 0.50 normalized distance - relaxed from 0.45)
                 # - Wrists NOT above shoulders (prone position)
+                # - Elbow movement OR shoulder movement
                 elif (elbow_rom_y > 0.06 or shoulder_rom_y > 0.06 or shoulder_rom_std > 0.015) and avg_hand_shoulder_dist < 0.50:
                     current_guess = "Push-Up"
                 else:
+                    # Fallback for horizontal position with low movement and prone-style hands
                     current_guess = "Plank"
 
         # Vertical Check
@@ -198,22 +202,17 @@ class ExerciseDetector:
             ankle_y_avg = np.mean([np.mean([lm[27].y, lm[28].y]) for lm in self.buffer])
             
             # Check for Seated Bench Press (Machine) (Vertical Body + Hands at Chest Level)
-            # 1. Body is vertical (Shoulder to Hip Y-difference is significant)
-            # Relaxed threshold to 0.12 to account for partial visibility or tighter framing
-            is_vertical_torso = abs(shoulder_y_avg - hip_y_avg) > 0.12
+            is_vertical_torso = abs(shoulder_y_avg - hip_y_avg) > 0.08
             
-            # 2. Hands are in CHEST ZONE (between slightly above shoulders and hips)
-            # NOT above head (Shoulder Press) and NOT below hips (Deadlift)
-            # Relaxed from strict 'close to shoulder' check
+            # Hands in CHEST ZONE
             wrist_y_avg = np.mean([np.mean([lm[15].y, lm[16].y]) for lm in self.buffer])
-            # Hands can be slightly above shoulder (top of press) but mostly below
-            # Hands must be above hips
-            hands_in_chest_zone = (wrist_y_avg > shoulder_y_avg - 0.12) and (wrist_y_avg < hip_y_avg + 0.1)
+            hands_in_chest_zone = (wrist_y_avg > shoulder_y_avg - 0.15) and (wrist_y_avg < hip_y_avg + 0.1)
             
             # SEATED PRESS vs FLY DISTINCTION
             if is_vertical_torso and hands_in_chest_zone:
                 # 1. CHEST FLY (Hand-to-Hand distance changes significantly)
-                if arm_spread_std > 0.07:
+                # Lowered threshold to 0.04 to catch narrower machine ranges
+                if arm_spread_std > 0.04:
                     # Seated (Butterfly Machine) has almost ZERO hip vertical movement
                     if hip_rom_y < 0.04 and horizontal_ratio < 0.2:
                         current_guess = "Seated Chest Fly"
@@ -221,7 +220,8 @@ class ExerciseDetector:
                         current_guess = "Chest Fly"
                 
                 # 2. SEATED BENCH PRESS (Hand-to-Hand distance remains stable)
-                elif combined_elbow_rom > 0.08 and arm_spread_std < 0.05:
+                # Stricter spread check to avoid misidentifying Flys
+                elif combined_elbow_rom > 0.06 and arm_spread_std < 0.04:
                     current_guess = "Seated Bench Press"
             
             # DIPS - Vertical movement of body with hands near HIPS
@@ -259,33 +259,20 @@ class ExerciseDetector:
                     elif hip_rom > 0.12:  # Reduced threshold for squat detection
                         current_guess = "Squat"
 
-        # 4. Voting & Confidence - More responsive
+        # 4. Voting & Confidence - Ultra responsive
         if current_guess:
             self.confidence_votes.append(current_guess)
-            self.last_guess = current_guess  # Track for debugging
+            self.last_guess = current_guess
             
-        # Allow detection with partial buffer for faster response
-        if len(self.confidence_votes) >= int(self.confidence_votes.maxlen * 0.8):  # 80% of voting window
+        # Allow detection with much smaller vote pool for faster response
+        if len(self.confidence_votes) >= int(self.confidence_votes.maxlen * 0.6):  # 60% of voting window (18 votes)
             counts = Counter(self.confidence_votes)
             most_common, count = counts.most_common(1)[0]
             
-            # Reduced confidence threshold from 90% to 75% for faster detection
+            # Use 70% confidence for faster initial lock
             confidence_ratio = count / len(self.confidence_votes)
-            if confidence_ratio > 0.75:
-                # Final check: Ensure we saw an inflection (the bottom of the rep)
-                # Skip this check for static exercises (Plank) and continuous exercises (Jumping Jacks)
-                if most_common in ["Squat", "Push-Up", "Bench Press", "Lunge", "Deadlift"]:
-                    # Only require inflection if we have enough data
-                    if len(self.buffer) >= self.window_size * 0.9:
-                        # Use shoulder_y for push-ups, elbow_y for bench press (main vertical movement)
-                        if most_common == "Push-Up":
-                            check_data = shoulder_y
-                        elif most_common == "Bench Press":
-                            check_data = elbow_y
-                        else:
-                            check_data = hip_y
-                        if not has_inflection(check_data):
-                            return None
+            if confidence_ratio > 0.70:
+                # Removed complex inflection check for initial detection to speed up start
                 return most_common
                 
         return None

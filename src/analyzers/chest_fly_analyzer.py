@@ -31,15 +31,26 @@ class ChestFlyAnalyzer:
         self.min_wrist_dist = 1000
         self.prev_vals = {}
         
+        # Base configs
         self.config = {
-            "open_dist_thresh": 0.8,  # Normalized by shoulder width
+            "open_dist_thresh": 0.8,  
             "closed_dist_thresh": 0.3,
             "max_elbow_flexion": 150, 
-            "min_elbow_flexion": 90,  # Relaxed
+            "min_elbow_flexion": 90,  
             "max_torso_lean": 30,     
-            "smoothing_alpha": 0.4,   # Faster smoothing
-            "fault_frame_thresh": 10
+            "smoothing_alpha": 0.25,  # Solid stability
+            "fault_frame_thresh": 10,
+            "state_transition_threshold": 4, # Conservative lock-in
+            "hysteresis": 0.15
         }
+        
+        # Adjust for Seated Variant (Machine/Butterfly)
+        if self.variant == "seated":
+            self.config["open_dist_thresh"] = 0.75    # Distinct stretch
+            self.config["closed_dist_thresh"] = 0.40  # Distinct squeeze
+            self.config["state_transition_threshold"] = 4 
+            self.config["hysteresis"] = 0.15
+            self.config["min_rom_dist"] = 0.20        # Require 20% width delta
         
         self.fault_counts = {
             "ELBOW_BENT_TOO_MUCH": 0,
@@ -128,31 +139,31 @@ class ChestFlyAnalyzer:
         def transition(new):
             if self.state != new:
                 self.state_counter += 1
-                if self.state_counter >= self.state_transition_threshold:
+                if self.state_counter >= self.config["state_transition_threshold"]:
                     self.state = new
                     self.state_counter = 0
                     return True
+            else:
+                self.state_counter = 0
             return False
 
-        # Thresholds relaxed significantly for machine fly's restricted ROM
-        # Machines often don't allow full closure or full opening
-        OPEN_THRESH = self.config["open_dist_thresh"] if self.variant == "standing" else 0.65
-        CLOSE_THRESH = self.config["closed_dist_thresh"] if self.variant == "standing" else 0.45
-
         if self.state == "OPENED":
-            if dist < OPEN_THRESH - 0.05:
+            if dist < self.config["open_dist_thresh"] - 0.05:
                 if transition("CLOSING"): self.feedback = "Squeeze!"
         elif self.state == "CLOSING":
-            if dist < CLOSE_THRESH:
+            if dist < self.config["closed_dist_thresh"]:
                 if transition("SQUEEZE"): self.feedback = "Squeeze tight!"
         elif self.state == "SQUEEZE":
-            if dist > CLOSE_THRESH + 0.1:
+            if dist > self.config["closed_dist_thresh"] + self.config["hysteresis"]:
                 if transition("OPENING"): self.feedback = "Open slowly."
         elif self.state == "OPENING":
-            if dist > OPEN_THRESH:
+            if dist > self.config["open_dist_thresh"]:
                 if transition("OPENED"):
-                    self.rep_count += 1
-                    self._score_rep()
+                    # Check for distance change (simple ROM)
+                    rep_rom = abs(self.config["open_dist_thresh"] - self.config["closed_dist_thresh"])
+                    if rep_rom > self.config.get("min_rom_dist", 0.1):
+                        self.rep_count += 1
+                        self._score_rep()
                     
     def _check_form(self, elbow_angle, torso_lean):
         if elbow_angle < self.config["min_elbow_flexion"]:
