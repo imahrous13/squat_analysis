@@ -457,8 +457,11 @@ def main():
     if "webcam_recording" not in st.session_state:
         st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
     
-    # Hybrid Detection is now enforced by default for maximum accuracy
-    use_hybrid = True 
+    # Setup Sidebar Options
+    with st.sidebar:
+        st.header("Settings")
+        use_hybrid = st.checkbox("Use AI-Enhanced Detection (YOLO + MediaPipe)", value=False, 
+                                 help="Turning this on improves person detection but requires more hardware.")
     
     exercise_type = st.radio("Select Exercise:", ["Auto-Detect", "Squat", "Lunge", "Push-Up", "Bench Press", "Seated Bench Press", "Deadlift", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips"], horizontal=True)
     tab1, tab2 = st.tabs(["📹 Upload Video", "🎥 Live Webcam"])
