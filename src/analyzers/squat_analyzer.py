@@ -18,9 +18,9 @@ class SquatAnalyzer:
         self.state_transition_threshold = 2 # Reduced for responsiveness
         
         # Thresholds (Balanced for stability - Relaxed Mode)
-        self.stand_threshold = 165
+        self.stand_threshold = 155 # Relaxed from 165
         self.descend_threshold = 150 # Relaxed from 145
-        self.deep_threshold = 140     # Relaxed from 125 (Easier depth)
+        self.deep_threshold = 140     # Relaxed from 125
         
         # Quality Metrics Data for current rep
         self.min_knee_angle = 180
@@ -29,15 +29,27 @@ class SquatAnalyzer:
         self.ascent_duration = 0
         self.bottom_start_time = 0
         self.bottom_duration = 0
+        self.last_state_change_time = 0 # Track time for timeout logic
+        
+        # Landmarks indices (MediaPipe Pose)
+        self.mp_pose = mp.solutions.pose
+        self._reset_rep_stats()
+        
+    def _reset_rep_stats(self):
+        self.min_knee_angle = 180
+        self.rep_start_time = time.time()
+        self.descent_duration = 0
+        self.ascent_duration = 0
+        self.bottom_start_time = 0
+        self.bottom_duration = 0
+        self.last_state_change_time = time.time()
         self.knee_valgus_flags = 0
         self.back_angle_flags = 0
         self.knee_over_toes_flags = 0
         self.heel_lift_flags = 0
         self.frame_count = 0
-        
-        # Landmarks indices (MediaPipe Pose)
-        self.mp_pose = mp.solutions.pose
-        self._reset_rep_stats()
+        self.advice = ""
+        self.current_rep_quality = {}
         
     def _reset_rep_stats(self):
         self.min_knee_angle = 180
@@ -216,6 +228,7 @@ class SquatAnalyzer:
                         self.state = "DESCENDING"
                         self._reset_rep_stats()
                         self.rep_start_time = current_time
+                        self.last_state_change_time = current_time
                         self.feedback = "Descending..."
                         self.state_counter = 0
             else:
@@ -227,6 +240,7 @@ class SquatAnalyzer:
                 if self.state_counter > self.state_transition_threshold:
                     self.state = "BOTTOM"
                     self.bottom_start_time = current_time
+                    self.last_state_change_time = current_time
                     self.descent_duration = current_time - self.rep_start_time
                     self.feedback = "Hold bottom..."
                     self.state_counter = 0
@@ -236,6 +250,7 @@ class SquatAnalyzer:
                 if self.state_counter > self.state_transition_threshold:
                     self.state = "STANDING"
                     self.feedback = "Aborted: Go Deeper!"
+                    self.last_state_change_time = current_time
                     self.state_counter = 0
             else:
                 self.state_counter = 0
@@ -246,15 +261,20 @@ class SquatAnalyzer:
                 if self.state_counter > self.state_transition_threshold:
                     self.state = "ASCENDING"
                     self.bottom_duration = current_time - self.bottom_start_time
+                    self.last_state_change_time = current_time
                     self.feedback = "Push up!"
                     self.state_counter = 0
             else:
                 self.state_counter = 0
                 
         elif self.state == "ASCENDING":
-            if current_knee_angle > self.stand_threshold:
+            # Timeout / Stuck Prevention: If stuck in ASCENDING for > 4s and somewhat upright, finish rep
+            time_in_state = current_time - self.last_state_change_time
+            is_stuck_upright = (time_in_state > 4.0 and current_knee_angle > 145)
+            
+            if current_knee_angle > self.stand_threshold or is_stuck_upright:
                 self.state_counter += 1
-                if self.state_counter > self.state_transition_threshold:
+                if self.state_counter > self.state_transition_threshold or is_stuck_upright:
                     self.state = "STANDING"
                     self.ascent_duration = current_time - (self.bottom_start_time + self.bottom_duration)
                     
@@ -263,10 +283,12 @@ class SquatAnalyzer:
                     if rep_total_time > 0.5: # Valid rep must take at least 0.5s (was 1.0)
                         self.rep_count += 1
                         self._score_rep(symmetry_diff)
+                        self.feedback = "Good Rep!" if not is_stuck_upright else "Rep Completed (Timeout)"
                     else:
                         self.feedback = f"Rep too fast ({rep_total_time:.1f}s)"
                         
                     self.state_counter = 0
+                    self.last_state_change_time = current_time
                 self.state_counter = 0
             
             # Feature: Allow chaining reps even if lockout wasn't perfect (prevent getting stuck)

@@ -15,17 +15,18 @@ class LungeAnalyzer:
         self.advice = ""
         self.prev_state = "STANDING"
         self.state_counter = 0 
-        self.state_transition_threshold = 4 # Reduced from 8 for responsiveness
+        self.state_transition_threshold = 4 
         
         # Thresholds (Balanced for stability)
-        self.stand_threshold = 160 
-        self.descend_threshold = 145 # Relaxed
-        self.bottom_threshold = 120 # Relaxed
+        self.stand_threshold = 150 # Relaxed from 160 to support Split Squats
+        self.descend_threshold = 145 
+        self.bottom_threshold = 120 
         
         # Rep Stats
         self.min_knee_angle = 180
-        self.lead_leg = None # "LEFT" or "RIGHT"
+        self.lead_leg = None 
         self.rep_start_time = 0
+        self.last_state_change_time = 0
         self.knee_valgus_flags = 0
         self.hip_tilt_flags = 0
         self.knee_over_toes_flags = 0
@@ -37,11 +38,13 @@ class LungeAnalyzer:
     def _reset_rep_stats(self):
         self.min_knee_angle = 180
         self.rep_start_time = time.time()
+        self.last_state_change_time = time.time()
         self.knee_valgus_flags = 0
         self.hip_tilt_flags = 0
         self.knee_over_toes_flags = 0
         self.torso_lean_flags = 0
         self.lead_leg = None
+        self.rep_frame_count = 0 # Track total active frames for ratio-based scoring
         self.current_rep_quality = {}
 
     def analyze(self, landmarks, frame_width, frame_height):
@@ -127,7 +130,7 @@ class LungeAnalyzer:
 
         # C. Knee Over Toes
         knee_over_toes = False
-        kot_threshold = relative_scale * 0.20 # Increased tolerance
+        kot_threshold = relative_scale * 0.15 # Relaxed tolerance (Balanced)
         
         if view == "SIDE":
             target_knee = l_knee if self.lead_leg == "LEFT" else r_knee
@@ -151,10 +154,13 @@ class LungeAnalyzer:
             
             # Angle against vertical
             torso_angle = calculate_angle(target_sh, target_hip, v_point)
-            if torso_angle > 35: torso_lean = True # Relaxed from 30
+            if torso_angle > 20: torso_lean = True # Stricter (was 35)
         if torso_lean: self.torso_lean_flags += 1
 
         # 5. State Machine
+        if self.state != "STANDING":
+            self.rep_frame_count += 1
+
         if self.state == "STANDING":
             if active_knee_angle < self.descend_threshold:
                 self.state_counter += 1
@@ -171,10 +177,16 @@ class LungeAnalyzer:
                 self.state_counter += 1
                 if self.state_counter >= self.state_transition_threshold:
                     self.state = "BOTTOM"
+                    self.last_state_change_time = time.time()
                     self.state_counter = 0
                     self.feedback = "Hold it!"
             elif active_knee_angle > self.descend_threshold + 10:
-                self.state = "STANDING" # Abort
+                # Check if it was a shallow rep attempt instead of just noise
+                if self.min_knee_angle < 155: 
+                    self._score_rep()
+                
+                self.state = "STANDING" # Abort/Reset
+                self.last_state_change_time = time.time()
                 self._reset_rep_stats()
             else:
                 self.state_counter = 0
@@ -185,17 +197,23 @@ class LungeAnalyzer:
                 self.state_counter += 1
                 if self.state_counter >= self.state_transition_threshold:
                     self.state = "ASCENDING"
+                    self.last_state_change_time = time.time()
                     self.state_counter = 0
                     self.feedback = "Push up!"
             else:
                 self.state_counter = 0
 
         elif self.state == "ASCENDING":
-            if active_knee_angle > self.stand_threshold:
+            # Timeout / Stuck Prevention
+            time_in_state = time.time() - self.last_state_change_time
+            is_stuck_upright = (time_in_state > 4.0 and active_knee_angle > 140)
+            
+            if active_knee_angle > self.stand_threshold or is_stuck_upright:
                 self.state_counter += 1
-                if self.state_counter >= self.state_transition_threshold:
+                if self.state_counter >= self.state_transition_threshold or is_stuck_upright:
                     self._score_rep() # Finalize and Count
                     self.state = "STANDING"
+                    self.last_state_change_time = time.time()
                     self.state_counter = 0
                     self._reset_rep_stats()
             else:
@@ -221,31 +239,38 @@ class LungeAnalyzer:
         score = 100
         deductions = []
         
-        # 1. Depth (Rule 5) - More Inclusive
-        if self.min_knee_angle > 145: # Relaxed from 140
+        total_frames = max(1, self.rep_frame_count)
+        
+        # Helper to check ratio
+        def check_fault(flags, threshold_ratio=0.30):
+            # Must be bad for at least 5 frames AND >30% of total time
+            return flags > 5 and (flags / total_frames) > threshold_ratio
+        
+        # 1. Depth (Rule 5)
+        if self.min_knee_angle > 145: 
             score -= 30 
             deductions.append("Too Shallow")
-        elif self.min_knee_angle > 130: # Relaxed
+        elif self.min_knee_angle > 130: 
             score -= 10 
             deductions.append("Slightly Shallow")
             
         # 2. Knee Stability
-        if self.knee_valgus_flags > 25: # Relaxed
+        if check_fault(self.knee_valgus_flags, 0.25): 
             score -= 15 
             deductions.append("Knee Caving")
             
         # 3. Hip Level
-        if self.hip_tilt_flags > 25: 
+        if check_fault(self.hip_tilt_flags, 0.25): 
             score -= 5 
             deductions.append("Hips Not Level")
             
         # 4. Knee Over Toes
-        if self.knee_over_toes_flags > 25: 
+        if check_fault(self.knee_over_toes_flags, 0.30): 
             score -= 15 
             deductions.append("Knee Over Toes")
             
         # 5. Torso Lean
-        if self.torso_lean_flags > 25: 
+        if check_fault(self.torso_lean_flags, 0.30): 
             score -= 10 
             deductions.append("Leaning Forward")
 
@@ -257,22 +282,24 @@ class LungeAnalyzer:
         # Determine Correct/Incorrect based on CRITICAL FAULTS
         critical_faults = []
         
-        # Depth is now just a deduction, not a failure condition (User preference)
-        # if self.min_knee_angle > 145: critical_faults.append("Shallow")
+        # Depth Critical
+        if self.min_knee_angle > 145: critical_faults.append("Shallow")
         
-        if self.knee_valgus_flags > 40: critical_faults.append("Valgus")
-        if self.knee_over_toes_flags > 45: critical_faults.append("Knee Over Toes")
-        if self.torso_lean_flags > 45: critical_faults.append("Back Lean")
+        # Stricter Critical Thresholds (e.g. > 30% time)
+        if check_fault(self.knee_valgus_flags, 0.30): critical_faults.append("Valgus")
+        if check_fault(self.knee_over_toes_flags, 0.25): critical_faults.append("Knee Over Toes")
+        if check_fault(self.torso_lean_flags, 0.30): critical_faults.append("Back Lean")
+        if check_fault(self.torso_lean_flags, 0.30): critical_faults.append("Back Lean")
 
         # Result
-        if not critical_faults and score >= 65: # Relaxed passing score
+        if not critical_faults and score >= 70:
             self.correct_reps += 1
             self.rep_count += 1
             self.advice = "Great form! Keep it up."
             self.feedback = f"Rep {self.rep_count}: Correct!"
         else:
             self.incorrect_reps += 1
-            # Do NOT increment rep_count
+            self.rep_count += 1 
             self.advice = "Watch your form. " + ", ".join(deductions)
             self.feedback = f"Incorrect rep detected: {', '.join(critical_faults)}"
 

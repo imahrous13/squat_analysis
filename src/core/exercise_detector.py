@@ -178,22 +178,55 @@ class ExerciseDetector:
                 # Bench Press indicators:
                 # - Wrists consistently ABOVE shoulders (relaxed to >30%) = supine position
                 # - Even small movement should trigger Bench Press over Plank if wrists are above shoulders
-                if wrists_above_ratio > 0.30:
+                # CRITICAL FIX: Ensure body is "flat" vertically (shoulder and ankle Y are close)
+                # Squats are standing (large Y diff), Bench Press is supine (small Y diff)
+                body_height_y = abs(lm[11].y - lm[27].y)
+                is_vertically_flat = body_height_y < 0.30
+                
+                # KINEMATIC CHECK: Bench Press vs Push-Up
+                # Bench Press: Hands Move (High ROM), Shoulders Fixed (Low ROM)
+                # Push-Up: Shoulders Move (High ROM), Hands Fixed (Low ROM)
+                all_wrist_y = [np.mean([lm[15].y, lm[16].y]) for lm in self.buffer]
+                wrist_rom_y = max(all_wrist_y) - min(all_wrist_y)
+                
+                # Ratio > 1.0 means Hands move more than Shoulders => Bench Press
+                # Ratio < 1.0 means Shoulders move more than Hands => Push-Up
+                hand_vs_shoulder_movement = wrist_rom_y / (shoulder_rom_y + 0.001)
+                is_bench_movement = hand_vs_shoulder_movement > 1.2
+                is_pushup_movement = hand_vs_shoulder_movement < 0.8
+
+                # Combined Check: Position (Supine) OR Movement (Hands Moving)
+                if (wrists_above_ratio > 0.30 or is_bench_movement) and is_vertically_flat:
                     # If there's some movement, it's definitely Bench Press
-                    if (elbow_rom_y > 0.05 or shoulder_rom_y > 0.05 or shoulder_rom_std > 0.015):
-                        current_guess = "Bench Press"
-                    else:
-                        # Even if static, if wrists are above shoulders, it's a Bench Press setup, not a Plank
-                        current_guess = "Bench Press"
+                    # INCREASED THRESHOLDS to prevent static "waiting" from counting
+                    if (elbow_rom_y > 0.08 or shoulder_rom_y > 0.08 or shoulder_rom_std > 0.03 or wrist_rom_y > 0.05):
+                        # DIFFERENTIATE Bench Press vs Chest Fly (Lying)
+                        # Bench Press: Elbows Extend (90->180). High Angle ROM.
+                        # Chest Fly: Elbows Fixed Bend. Low Angle ROM.
+                        def get_angle(a, b, c):
+                            ang = np.degrees(np.arctan2(c.y-b.y, c.x-b.x) - np.arctan2(a.y-b.y, a.x-b.x))
+                            return abs(ang) if abs(ang) < 180 else 360 - abs(ang)
+
+                        l_angles = [get_angle(lm[11], lm[13], lm[15]) for lm in self.buffer]
+                        r_angles = [get_angle(lm[12], lm[14], lm[16]) for lm in self.buffer]
+                        avg_elbow_rom = ((max(l_angles)-min(l_angles)) + (max(r_angles)-min(r_angles))) / 2
+                        
+                        if avg_elbow_rom < 45:
+                            current_guess = "Chest Fly"
+                        else:
+                            current_guess = "Bench Press"
                         
                 # Push-up indicators:
                 # - Wrists NOT above shoulders (prone position)
                 # - Elbow movement OR shoulder movement
-                elif (elbow_rom_y > 0.06 or shoulder_rom_y > 0.06 or shoulder_rom_std > 0.015) and avg_hand_shoulder_dist < 0.50:
-                    current_guess = "Push-Up"
+                # - Shoulders moving (is_pushup_movement)
+                elif (elbow_rom_y > 0.06 or shoulder_rom_y > 0.06 or shoulder_rom_std > 0.015) and (is_pushup_movement or avg_hand_shoulder_dist < 0.50):
+                        current_guess = "Push-Up"
                 else:
                     # Fallback for horizontal position with low movement and prone-style hands
-                    current_guess = "Plank"
+                    # Also enforce flatness for Plank to avoid weird false positives
+                    if is_vertically_flat:
+                        current_guess = "Plank"
 
         # Vertical Check
         if current_guess is None:
@@ -204,31 +237,20 @@ class ExerciseDetector:
             # Check for Seated Bench Press (Machine) (Vertical Body + Hands at Chest Level)
             is_vertical_torso = abs(shoulder_y_avg - hip_y_avg) > 0.08
             
-            # Hands in CHEST ZONE
+            # Hands in CHEST/MID ZONE (Relaxed lower bound for Dips/Press)
             wrist_y_avg = np.mean([np.mean([lm[15].y, lm[16].y]) for lm in self.buffer])
-            hands_in_chest_zone = (wrist_y_avg > shoulder_y_avg - 0.15) and (wrist_y_avg < hip_y_avg + 0.1)
+            hands_in_chest_zone = (wrist_y_avg > shoulder_y_avg - 0.15) and (wrist_y_avg < hip_y_avg + 0.25)
             
-            # SEATED PRESS vs FLY DISTINCTION
-            if is_vertical_torso and hands_in_chest_zone:
-                # 1. CHEST FLY (Hand-to-Hand distance changes significantly)
-                # Lowered threshold to 0.04 to catch narrower machine ranges
-                if arm_spread_std > 0.04:
-                    # Seated (Butterfly Machine) has almost ZERO hip vertical movement
-                    if hip_rom_y < 0.04 and horizontal_ratio < 0.2:
-                        current_guess = "Seated Chest Fly"
-                    else:
-                        current_guess = "Chest Fly"
-                
-                # 2. SEATED BENCH PRESS (Hand-to-Hand distance remains stable)
-                # Stricter spread check to avoid misidentifying Flys
-                elif combined_elbow_rom > 0.06 and arm_spread_std < 0.04:
-                    current_guess = "Seated Bench Press"
+            # Check if person is STANDING (Large distance between shoulder and ankle)
+            # If Standing, we should NOT detect "Seated" exercises
+            standing_height = abs(shoulder_y_avg - ankle_y_avg)
+            # Threshold adjusted to robustly identify standing
+            is_standing_pose = standing_height > 0.20
             
-            # DIPS - Vertical movement of body with hands near HIPS
-            elif is_vertical_torso and shoulder_rom_y > 0.08 and hands_below_hips_ratio > 0.6:
-                current_guess = "Dips"
-            
-            elif abs(shoulder_y_avg - ankle_y_avg) > 0.2:
+            # 1. CHECK LEG/FULL BODY EXERCISES (Lunge, Squat, Deadlift)
+            # Prioritize this because Squats often have hands in chest zone (which was blocking them)
+            # Use standing_height or leg checks
+            if standing_height > 0.15:
                 # Improved Lunge Detection: Check for asymmetric leg movement
                 knee_y_diffs = [ abs(lm[25].y - lm[26].y) for lm in self.buffer ]
                 knee_diff_rom = max(knee_y_diffs) - min(knee_y_diffs)
@@ -238,9 +260,6 @@ class ExerciseDetector:
                 avg_ankle_dist = np.mean(ankle_dists)
                 
                 # Lunge indicators:
-                # 1. Significant knee height difference (one leg forward)
-                # 2. Wide ankle distance (split stance)
-                # 3. Knee height difference changes during movement
                 is_lunge = (avg_knee_diff > 0.12 and avg_ankle_dist > 0.22) or \
                            (knee_diff_rom > 0.08 and avg_ankle_dist > 0.20)
                 
@@ -254,10 +273,122 @@ class ExerciseDetector:
                     torso_rom = max(torso_heights) - min(torso_heights)
                     
                     # Improved deadlift detection: hands should stay consistently low
-                    if torso_rom > 0.12 and sum(hands_low_frames) > self.window_size * 0.65:
+                    if torso_rom > 0.10 and sum(hands_low_frames) > self.window_size * 0.65:
                         current_guess = "Deadlift"
-                    elif hip_rom > 0.12:  # Reduced threshold for squat detection
-                        current_guess = "Squat"
+                    elif hip_rom > 0.08:  # Further reduced threshold for squat detection
+                        # Differentiate Squat vs Dips
+                        # Logic:
+                        # 1. Hands: Fixed (Dips/Assisted Squat) vs Moving (Standard Squat)
+                        # 2. Legs: Rigid (Dips) vs Compressing (Squats)
+                        
+                        # 1. Elbow Angle Check: DIFFERENTIATOR
+                        # Dips: High Elbow ROM (Extension 90->180). Squats: Static Arms (Holding Bar).
+                        def get_angle(a, b, c):
+                            ang = np.degrees(np.arctan2(c.y-b.y, c.x-b.x) - np.arctan2(a.y-b.y, a.x-b.x))
+                            return abs(ang) if abs(ang) < 180 else 360 - abs(ang)
+
+                        l_angles = [get_angle(lm[11], lm[13], lm[15]) for lm in self.buffer]
+                        r_angles = [get_angle(lm[12], lm[14], lm[16]) for lm in self.buffer]
+                        avg_elbow_rom = ((max(l_angles)-min(l_angles)) + (max(r_angles)-min(r_angles))) / 2
+                        
+                        # Typical Dips: > 60 deg change. Squats: < 20 deg change.
+                        # Also keep hand check as secondary guard? No, angle determines mechanism.
+                        if avg_elbow_rom > 35:
+                            current_guess = "Dips"
+                        else:
+                            current_guess = "Squat"
+
+            # 2. CHECK SEATED / UPPER BODY EXERCISES (Fly, Press)
+            # Only if no leg exercise detected AND NOT CLEARLY STANDING
+            # Additional Guards:
+            # - Hip ROM must be low (Seated user shouldn't mimic squat motion)
+            # - Ankle distance should be normal (Not split stance like lunge)
+            ankle_dist_x = np.mean([abs(lm[27].x - lm[28].x) for lm in self.buffer])
+            
+            if current_guess is None and is_vertical_torso and hands_in_chest_zone:
+                # Strict exclusions for Seated exercises
+                is_excluded_by_hip_movement = hip_rom_y > 0.10 # Relaxed from 0.06 to allow slight shift
+                is_excluded_by_stance = ankle_dist_x > 0.18 # Wide/Split stance = Lunge/Squat
+                
+                # Removed is_excluded_by_standing check as it blocks legitimate Seated exercises (Dips/Press)
+                if not (is_excluded_by_hip_movement or is_excluded_by_stance):
+                    # 1. CHEST FLY (Hand-to-Hand distance changes significantly)
+                    # Switched to ROM check (Max - Min) for robustness
+                    # Flys have large width change (>0.15). Press has fixed width (<0.10).
+                    arm_spread_dists = [abs(lm[15].x - lm[16].x) for lm in self.buffer]
+                    arm_spread_rom = max(arm_spread_dists) - min(arm_spread_dists)
+                    
+                    # Elbow Angle ROM Check: DIFFERENTIATOR
+                    # Press: Elbows Extend (Angle changes 90->180, ROM > 60).
+                    # Fly: Elbows Fixed Bend (Angle constant, ROM < 30).
+                    def get_angle(a, b, c):
+                        ang = np.degrees(np.arctan2(c.y-b.y, c.x-b.x) - np.arctan2(a.y-b.y, a.x-b.x))
+                        return abs(ang) if abs(ang) < 180 else 360 - abs(ang)
+
+                    l_angles = [get_angle(lm[11], lm[13], lm[15]) for lm in self.buffer]
+                    r_angles = [get_angle(lm[12], lm[14], lm[16]) for lm in self.buffer]
+                    avg_elbow_rom = ((max(l_angles)-min(l_angles)) + (max(r_angles)-min(r_angles))) / 2
+
+                    if arm_spread_rom > 0.15 and avg_elbow_rom < 45:
+                        # Seated (Butterfly Machine) has almost ZERO hip vertical movement
+                        if hip_rom_y < 0.04 and horizontal_ratio < 0.2:
+                            current_guess = "Seated Chest Fly"
+                        else:
+                            current_guess = "Chest Fly"
+                    
+                    else:
+                        # Differentiate Seated Press vs Seated Dips using HAND POSITION + MOVEMENT
+                        # Seated Dips: Hands are generally LOWER (near hips) and move VERTICALLY.
+                        # Seated Bench Press: Hands are HIGHER (chest/shoulder level) and move HORIZONTALLY.
+                        
+                        wrist_y = [np.mean([lm[15].y, lm[16].y]) for lm in self.buffer]
+                        wrist_x = [np.mean([lm[15].x, lm[16].x]) for lm in self.buffer]
+                        wrist_rom_y = max(wrist_y) - min(wrist_y)
+                        wrist_rom_x = max(wrist_x) - min(wrist_x)
+                        
+                        # Calculate Elbow ROM explicitly to avoid UnboundLocalError
+                        l_elbow_x = [lm[13].x for lm in self.buffer]
+                        r_elbow_x = [lm[14].x for lm in self.buffer]
+                        combined_elbow_rom = (max(l_elbow_x) - min(l_elbow_x) + max(r_elbow_x) - min(r_elbow_x)) / 2
+
+                        avg_wrist_y = np.mean(wrist_y)
+                        avg_shoulder_y = np.mean([np.mean([lm[11].y, lm[12].y]) for lm in self.buffer])
+                        
+                        # Check if hands are typically lower than chest level
+                        # Y increases downwards. So Wrist > Shoulder means Wrist is Lower.
+                        hands_are_low = avg_wrist_y > (avg_shoulder_y + 0.10)
+                        
+                        # 2. SEATED DIPS (Tricep Press)
+                        # High Elbow ROM + (Hands Low OR Dominant Vertical Movement)
+                        # Relaxed X-ROM check because oblique angles cause X movement projection
+                        if combined_elbow_rom > 0.06 and (hands_are_low or (wrist_rom_y > 0.08 and wrist_rom_x < 0.10)):
+                            current_guess = "Seated Dips"
+                            
+                        # 3. SEATED BENCH PRESS
+                        # Fallback if hands are high (Chest level)
+                        elif combined_elbow_rom > 0.06:
+                             current_guess = "Seated Bench Press"
+            
+            # 3. DIPS
+            if current_guess is None and is_vertical_torso and shoulder_rom_y > 0.08 and hands_below_hips_ratio > 0.6:
+                current_guess = "Dips"
+            
+            # 4. Voting & Confidence - Ultra responsive
+            if current_guess:
+                self.confidence_votes.append(current_guess)
+                self.last_guess = current_guess
+            
+            # Allow detection with much smaller vote pool for faster response
+            if len(self.confidence_votes) >= int(self.confidence_votes.maxlen * 0.6):  # 60% of voting window (18 votes)
+                counts = Counter(self.confidence_votes)
+                most_common, count = counts.most_common(1)[0]
+                
+                # Use 70% confidence for faster initial lock
+                confidence_ratio = count / len(self.confidence_votes)
+                if confidence_ratio > 0.70:
+                    return most_common
+                    
+            return None
 
         # 4. Voting & Confidence - Ultra responsive
         if current_guess:
