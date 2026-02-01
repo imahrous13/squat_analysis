@@ -1,11 +1,7 @@
 opencv-python
 mediapipe
 numpy
-pandas
 streamlit
 streamlit-webrtc
 av
 ultralytics
-fastapi
-uvicorn
-python-multipart
