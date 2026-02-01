@@ -17,10 +17,10 @@ class LungeAnalyzer:
         self.state_counter = 0 
         self.state_transition_threshold = 3  # Reduced from 4 for faster response 
         
-        # Thresholds (Balanced to prevent false positives)
-        self.stand_threshold = 155  # Increased to prevent false positives
-        self.descend_threshold = 145  # Moderate threshold
-        self.bottom_threshold = 115  # Require decent depth to count 
+        # Thresholds (Optimized for accuracy)
+        self.stand_threshold = 150  # Balanced - not too strict, not too lenient
+        self.descend_threshold = 140  # Detect descent early
+        self.bottom_threshold = 110  # Require proper depth to prevent false positives 
         
         # Rep Stats
         self.min_knee_angle = 180
@@ -241,37 +241,37 @@ class LungeAnalyzer:
         
         total_frames = max(1, self.rep_frame_count)
         
-        # Helper to check ratio - BALANCED thresholds
-        def check_fault(flags, threshold_ratio=0.35):  # Balanced at 35%
+        # Helper to check ratio - OPTIMIZED thresholds
+        def check_fault(flags, threshold_ratio=0.35):
             # Must be bad for at least 6 frames AND >35% of total time
             return flags > 6 and (flags / total_frames) > threshold_ratio
         
-        # 1. Depth - MODERATE
-        if self.min_knee_angle > 150:  
-            score -= 30 
+        # 1. Depth - REASONABLE
+        if self.min_knee_angle > 145:  # Reduced from 150 - more forgiving
+            score -= 25  # Reduced penalty
             deductions.append("Too Shallow")
-        elif self.min_knee_angle > 135:  
-            score -= 10 
+        elif self.min_knee_angle > 130:  
+            score -= 8  
             deductions.append("Slightly Shallow")
             
         # 2. Knee Stability - MODERATE
         if check_fault(self.knee_valgus_flags, 0.35):  
-            score -= 15 
+            score -= 12 
             deductions.append("Knee Caving")
             
         # 3. Hip Level - LENIENT (minor issue)
-        if check_fault(self.hip_tilt_flags, 0.40):  
+        if check_fault(self.hip_tilt_flags, 0.45):  
             score -= 5 
             deductions.append("Hips Not Level")
             
-        # 4. Knee Over Toes - STRICTER (important for safety)
-        if check_fault(self.knee_over_toes_flags, 0.30):  # Stricter threshold
-            score -= 15  # Higher penalty
+        # 4. Knee Over Toes - MODERATE (important but common)
+        if check_fault(self.knee_over_toes_flags, 0.35):  
+            score -= 12
             deductions.append("Knee Over Toes")
             
-        # 5. Torso Lean - STRICTER (head crossing toes is bad form)
-        if check_fault(self.torso_lean_flags, 0.30):  # Stricter threshold
-            score -= 15  # Higher penalty
+        # 5. Torso Lean - MODERATE (important for form)
+        if check_fault(self.torso_lean_flags, 0.35):  
+            score -= 12
             deductions.append("Leaning Forward")
 
         self.current_rep_quality = {
@@ -280,19 +280,19 @@ class LungeAnalyzer:
         }
 
         # Determine Correct/Incorrect based on CRITICAL FAULTS
-        # BALANCED - catch important form issues
+        # REASONABLE - catch major issues but allow minor imperfections
         critical_faults = []
         
-        # Depth Critical - MODERATE
-        if self.min_knee_angle > 150: critical_faults.append("Shallow")
+        # Depth Critical - REASONABLE
+        if self.min_knee_angle > 155: critical_faults.append("Shallow")  # Very shallow
         
-        # Balanced Critical Thresholds - catch significant issues
-        if check_fault(self.knee_valgus_flags, 0.40): critical_faults.append("Valgus")
-        if check_fault(self.knee_over_toes_flags, 0.35): critical_faults.append("Knee Over Toes")  # Stricter
-        if check_fault(self.torso_lean_flags, 0.35): critical_faults.append("Back Lean")  # Stricter
+        # Moderate Critical Thresholds - catch persistent issues
+        if check_fault(self.knee_valgus_flags, 0.45): critical_faults.append("Valgus")
+        if check_fault(self.knee_over_toes_flags, 0.40): critical_faults.append("Knee Over Toes")
+        if check_fault(self.torso_lean_flags, 0.40): critical_faults.append("Back Lean")
 
-        # Result - BALANCED score threshold
-        if not critical_faults and score >= 65:  # Moderate threshold
+        # Result - REASONABLE score threshold
+        if not critical_faults and score >= 60:  # Reasonable passing score
             self.correct_reps += 1
             self.rep_count += 1
             self.advice = "Great form! Keep it up."
@@ -300,8 +300,8 @@ class LungeAnalyzer:
         else:
             self.incorrect_reps += 1
             self.rep_count += 1 
-            self.advice = "Watch your form. " + ", ".join(deductions)
-            self.feedback = f"Incorrect rep detected: {', '.join(critical_faults)}"
+            self.advice = "Watch your form. " + ", ".join(deductions) if deductions else "Form needs improvement."
+            self.feedback = f"Rep {self.rep_count}: Incorrect - {', '.join(critical_faults) if critical_faults else 'Low score'}"
 
     def _empty_response(self, msg):
         return {
