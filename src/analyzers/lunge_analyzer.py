@@ -15,12 +15,12 @@ class LungeAnalyzer:
         self.advice = ""
         self.prev_state = "STANDING"
         self.state_counter = 0 
-        self.state_transition_threshold = 4 
+        self.state_transition_threshold = 3  # Reduced from 4 for faster response 
         
-        # Thresholds (Balanced for stability)
-        self.stand_threshold = 150 # Relaxed from 160 to support Split Squats
-        self.descend_threshold = 145 
-        self.bottom_threshold = 120 
+        # Thresholds (Relaxed for better counting)
+        self.stand_threshold = 145  # Relaxed from 150 - easier to return to standing
+        self.descend_threshold = 140  # Relaxed from 145 - detect descent earlier
+        self.bottom_threshold = 110  # Relaxed from 120 - accept deeper lunges 
         
         # Rep Stats
         self.min_knee_angle = 180
