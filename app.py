@@ -353,22 +353,6 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     
-    # Check for rotation metadata
-    rotation = 0
-    try:
-        # Try to get rotation from video metadata
-        rotation_code = int(cap.get(cv2.CAP_PROP_ORIENTATION_META))
-        if rotation_code == 6:  # 90 degrees clockwise
-            rotation = 90
-            width, height = height, width  # Swap dimensions
-        elif rotation_code == 3:  # 180 degrees
-            rotation = 180
-        elif rotation_code == 8:  # 90 degrees counter-clockwise
-            rotation = 270
-            width, height = height, width  # Swap dimensions
-    except:
-        pass  # No rotation metadata or not supported
-    
     # Use H264 codec for better browser compatibility
     try:
         fourcc = cv2.VideoWriter_fourcc(*'H264')
@@ -424,14 +408,6 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
-        
-        # Apply rotation if needed
-        if rotation == 90:
-            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        elif rotation == 180:
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
-        elif rotation == 270:
-            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
             
         frame, _ = detector.find_pose(frame, draw=True)
         landmarks = detector.get_landmarks()
