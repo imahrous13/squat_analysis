@@ -189,14 +189,24 @@ class ExerciseDetector:
                 all_wrist_y = [np.mean([lm[15].y, lm[16].y]) for lm in self.buffer]
                 wrist_rom_y = max(all_wrist_y) - min(all_wrist_y)
                 
-                # Ratio > 1.0 means Hands move more than Shoulders => Bench Press
-                # Ratio < 1.0 means Shoulders move more than Hands => Push-Up
+                # Ratio > 1.5 means Hands move MORE than Shoulders => Bench Press
+                # Ratio < 0.7 means Shoulders move MORE than Hands => Push-Up
                 hand_vs_shoulder_movement = wrist_rom_y / (shoulder_rom_y + 0.001)
-                is_bench_movement = hand_vs_shoulder_movement > 1.2
-                is_pushup_movement = hand_vs_shoulder_movement < 0.8
+                is_bench_movement = hand_vs_shoulder_movement > 1.5  # Increased from 1.2
+                is_pushup_movement = hand_vs_shoulder_movement < 0.7  # Decreased from 0.8
+
+                # Additional check: In bench press, elbows typically move outward (X-axis)
+                # In push-ups, body moves up/down (Y-axis dominant)
+                elbow_x_positions = [np.mean([lm[13].x, lm[14].x]) for lm in self.buffer]
+                elbow_rom_x = max(elbow_x_positions) - min(elbow_x_positions)
+                
+                # Bench press has more horizontal elbow movement
+                is_bench_elbow_pattern = elbow_rom_x > 0.08
 
                 # Combined Check: Position (Supine) OR Movement (Hands Moving)
-                if (wrists_above_ratio > 0.30 or is_bench_movement) and is_vertically_flat:
+                # STRENGTHENED: Require BOTH position AND movement for bench press
+                if ((wrists_above_ratio > 0.40 and is_bench_movement) or 
+                    (wrists_above_ratio > 0.50 and is_bench_elbow_pattern)) and is_vertically_flat:
                     # If there's some movement, it's definitely Bench Press
                     # INCREASED THRESHOLDS to prevent static "waiting" from counting
                     if (elbow_rom_y > 0.08 or shoulder_rom_y > 0.08 or shoulder_rom_std > 0.03 or wrist_rom_y > 0.05):
@@ -219,8 +229,10 @@ class ExerciseDetector:
                 # Push-up indicators:
                 # - Wrists NOT above shoulders (prone position)
                 # - Elbow movement OR shoulder movement
-                # - Shoulders moving (is_pushup_movement)
-                elif (elbow_rom_y > 0.06 or shoulder_rom_y > 0.06 or shoulder_rom_std > 0.015) and (is_pushup_movement or avg_hand_shoulder_dist < 0.50):
+                # - Shoulders moving MORE than hands (is_pushup_movement)
+                # STRENGTHENED: Require clear push-up movement pattern
+                elif ((is_pushup_movement and (elbow_rom_y > 0.06 or shoulder_rom_y > 0.06)) or 
+                      (wrists_above_ratio < 0.20 and shoulder_rom_y > 0.08 and avg_hand_shoulder_dist < 0.50)):
                         current_guess = "Push-Up"
                 else:
                     # Fallback for horizontal position with low movement and prone-style hands
