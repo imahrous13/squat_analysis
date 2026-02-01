@@ -3,6 +3,7 @@ import cv2
 import tempfile
 import os
 import time
+import subprocess
 import mediapipe as mp
 import numpy as np
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
@@ -27,6 +28,35 @@ from src.core.utils import draw_text_with_background, get_landmark_pixel
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
+
+def reencode_video_for_browser(input_path, output_path=None):
+    """Re-encode video using ffmpeg for browser compatibility."""
+    if output_path is None:
+        output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+    
+    try:
+        # Use ffmpeg to re-encode with H.264 codec for maximum browser compatibility
+        cmd = [
+            'ffmpeg', '-y', '-i', input_path,
+            '-c:v', 'libx264',  # H.264 video codec
+            '-preset', 'fast',   # Encoding speed
+            '-crf', '23',        # Quality (lower = better, 23 is default)
+            '-pix_fmt', 'yuv420p',  # Pixel format for compatibility
+            '-movflags', '+faststart',  # Enable streaming
+            output_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        
+        if result.returncode == 0 and os.path.exists(output_path):
+            return output_path
+        else:
+            st.warning(f"FFmpeg re-encoding failed: {result.stderr}")
+            return input_path
+    except Exception as e:
+        st.warning(f"Could not re-encode video: {str(e)}. Using original.")
+        return input_path
+
 
 class BaseVideoProcessor(VideoProcessorBase):
     def __init__(self, analyzer_class, recording_path=None, use_hybrid=False, **analyzer_args):
@@ -140,13 +170,22 @@ class BaseVideoProcessor(VideoProcessorBase):
         if self.recording_path:
             if self.out is None:
                 try:
-                    fourcc = cv2.VideoWriter_fourcc(*'avc1')
+                    # Try H264 codec first (best browser compatibility)
+                    fourcc = cv2.VideoWriter_fourcc(*'H264')
                     self.out = cv2.VideoWriter(self.recording_path, fourcc, 20.0, (w, h))
                     if not self.out.isOpened():
-                        raise Exception("avc1 failed")
+                        raise Exception("H264 failed")
                 except:
-                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                    self.out = cv2.VideoWriter(self.recording_path, fourcc, 20.0, (w, h))
+                    try:
+                        # Fallback to X264
+                        fourcc = cv2.VideoWriter_fourcc(*'X264')
+                        self.out = cv2.VideoWriter(self.recording_path, fourcc, 20.0, (w, h))
+                        if not self.out.isOpened():
+                            raise Exception("X264 failed")
+                    except:
+                        # Last resort: mp4v
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        self.out = cv2.VideoWriter(self.recording_path, fourcc, 20.0, (w, h))
             self.out.write(img)
             
         return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -306,12 +345,22 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     
+    # Use H264 codec for better browser compatibility
     try:
-        fourcc = cv2.VideoWriter_fourcc(*'avc1')
+        fourcc = cv2.VideoWriter_fourcc(*'H264')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        if not out.isOpened():
+            raise Exception("H264 failed")
     except:
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*'X264')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            if not out.isOpened():
+                raise Exception("X264 failed")
+        except:
+            # Fallback to mp4v
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
     if use_hybrid and os.path.exists('yolov8n.pt'):
         detector = HybridPoseEstimator(model_path='yolov8n.pt')
@@ -474,19 +523,24 @@ def main():
             st.video(tfile.name)
             
             if st.button(f'Analyze {exercise_type}'):
-                output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-                with st.spinner('Analyzing...'):
-                    process_video(tfile.name, output_path, mode=exercise_type, use_hybrid=use_hybrid)
-                    st.success("Done!")
-                    st.video(output_path)
+                temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+                with st.spinner('Analyzing video...'):
+                    process_video(tfile.name, temp_output, mode=exercise_type, use_hybrid=use_hybrid)
+                
+                # Re-encode for browser compatibility
+                with st.spinner('Optimizing video for playback...'):
+                    output_path = reencode_video_for_browser(temp_output)
                     
-                    with open(output_path, "rb") as file:
-                        st.download_button(
-                            label="Download Analyzed Video",
-                            data=file,
-                            file_name=f"analyzed_{exercise_type.lower()}.mp4",
-                            mime="video/mp4"
-                        )
+                st.success("Done!")
+                st.video(output_path)
+                
+                with open(output_path, "rb") as file:
+                    st.download_button(
+                        label="Download Analyzed Video",
+                        data=file,
+                        file_name=f"analyzed_{exercise_type.lower()}.mp4",
+                        mime="video/mp4"
+                    )
     
     with tab2:
         processors = {
@@ -524,9 +578,19 @@ def main():
         if not ctx.state.playing and os.path.exists(st.session_state.webcam_recording):
             if os.path.getsize(st.session_state.webcam_recording) > 1000:
                 st.subheader("📊 Last Session Results")
-                st.video(st.session_state.webcam_recording)
                 
-                with open(st.session_state.webcam_recording, "rb") as file:
+                # Re-encode for browser compatibility if not already done
+                if not hasattr(st.session_state, 'webcam_recording_encoded') or \
+                   st.session_state.webcam_recording_encoded != st.session_state.webcam_recording:
+                    with st.spinner('Optimizing video for playback...'):
+                        encoded_path = reencode_video_for_browser(st.session_state.webcam_recording)
+                        st.session_state.webcam_recording_display = encoded_path
+                        st.session_state.webcam_recording_encoded = st.session_state.webcam_recording
+                
+                display_video = st.session_state.get('webcam_recording_display', st.session_state.webcam_recording)
+                st.video(display_video)
+                
+                with open(display_video, "rb") as file:
                     st.download_button(
                         label="📥 Download Webcam Session",
                         data=file,
