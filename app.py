@@ -31,6 +31,10 @@ RTC_CONFIGURATION = RTCConfiguration(
 
 def reencode_video_for_browser(input_path, output_path=None):
     """Re-encode video using ffmpeg for browser compatibility."""
+    # If input doesn't exist, return it as-is
+    if not os.path.exists(input_path):
+        return input_path
+    
     if output_path is None:
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
     
@@ -48,13 +52,13 @@ def reencode_video_for_browser(input_path, output_path=None):
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
-        if result.returncode == 0 and os.path.exists(output_path):
+        if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return output_path
         else:
-            st.warning(f"FFmpeg re-encoding failed: {result.stderr}")
+            # Silently fall back to original if re-encoding fails
             return input_path
     except Exception as e:
-        st.warning(f"Could not re-encode video: {str(e)}. Using original.")
+        # Silently fall back to original on any error
         return input_path
 
 
