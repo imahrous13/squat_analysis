@@ -241,37 +241,37 @@ class LungeAnalyzer:
         
         total_frames = max(1, self.rep_frame_count)
         
-        # Helper to check ratio - RELAXED thresholds
-        def check_fault(flags, threshold_ratio=0.40):  # Increased from 0.30 to 0.40
-            # Must be bad for at least 8 frames AND >40% of total time
-            return flags > 8 and (flags / total_frames) > threshold_ratio
+        # Helper to check ratio - BALANCED thresholds
+        def check_fault(flags, threshold_ratio=0.35):  # Balanced at 35%
+            # Must be bad for at least 6 frames AND >35% of total time
+            return flags > 6 and (flags / total_frames) > threshold_ratio
         
-        # 1. Depth - RELAXED
-        if self.min_knee_angle > 150:  # Increased from 145
+        # 1. Depth - MODERATE
+        if self.min_knee_angle > 150:  
             score -= 30 
             deductions.append("Too Shallow")
-        elif self.min_knee_angle > 135:  # Increased from 130
+        elif self.min_knee_angle > 135:  
             score -= 10 
             deductions.append("Slightly Shallow")
             
-        # 2. Knee Stability - RELAXED
-        if check_fault(self.knee_valgus_flags, 0.40):  # Increased from 0.25
+        # 2. Knee Stability - MODERATE
+        if check_fault(self.knee_valgus_flags, 0.35):  
             score -= 15 
             deductions.append("Knee Caving")
             
-        # 3. Hip Level - RELAXED
-        if check_fault(self.hip_tilt_flags, 0.40):  # Increased from 0.25
+        # 3. Hip Level - LENIENT (minor issue)
+        if check_fault(self.hip_tilt_flags, 0.40):  
             score -= 5 
             deductions.append("Hips Not Level")
             
-        # 4. Knee Over Toes - RELAXED (this is often acceptable in lunges)
-        if check_fault(self.knee_over_toes_flags, 0.50):  # Increased from 0.30
-            score -= 10  # Reduced penalty from 15
+        # 4. Knee Over Toes - STRICTER (important for safety)
+        if check_fault(self.knee_over_toes_flags, 0.30):  # Stricter threshold
+            score -= 15  # Higher penalty
             deductions.append("Knee Over Toes")
             
-        # 5. Torso Lean - RELAXED
-        if check_fault(self.torso_lean_flags, 0.40):  # Increased from 0.30
-            score -= 10 
+        # 5. Torso Lean - STRICTER (head crossing toes is bad form)
+        if check_fault(self.torso_lean_flags, 0.30):  # Stricter threshold
+            score -= 15  # Higher penalty
             deductions.append("Leaning Forward")
 
         self.current_rep_quality = {
@@ -280,19 +280,19 @@ class LungeAnalyzer:
         }
 
         # Determine Correct/Incorrect based on CRITICAL FAULTS
-        # MUCH MORE LENIENT - only major issues count as critical
+        # BALANCED - catch important form issues
         critical_faults = []
         
-        # Depth Critical - RELAXED
-        if self.min_knee_angle > 150: critical_faults.append("Shallow")  # Increased from 145
+        # Depth Critical - MODERATE
+        if self.min_knee_angle > 150: critical_faults.append("Shallow")
         
-        # Very Lenient Critical Thresholds - only severe issues
-        if check_fault(self.knee_valgus_flags, 0.50): critical_faults.append("Valgus")  # Increased from 0.30
-        if check_fault(self.knee_over_toes_flags, 0.60): critical_faults.append("Knee Over Toes")  # Increased from 0.25
-        if check_fault(self.torso_lean_flags, 0.50): critical_faults.append("Back Lean")  # Increased from 0.30
+        # Balanced Critical Thresholds - catch significant issues
+        if check_fault(self.knee_valgus_flags, 0.40): critical_faults.append("Valgus")
+        if check_fault(self.knee_over_toes_flags, 0.35): critical_faults.append("Knee Over Toes")  # Stricter
+        if check_fault(self.torso_lean_flags, 0.35): critical_faults.append("Back Lean")  # Stricter
 
-        # Result - LOWERED score threshold
-        if not critical_faults and score >= 60:  # Lowered from 70
+        # Result - BALANCED score threshold
+        if not critical_faults and score >= 65:  # Moderate threshold
             self.correct_reps += 1
             self.rep_count += 1
             self.advice = "Great form! Keep it up."
