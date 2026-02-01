@@ -40,18 +40,17 @@ def reencode_video_for_browser(input_path, output_path=None):
     
     try:
         # Use ffmpeg to re-encode with H.264 codec for maximum browser compatibility
-        # -noautorotate prevents ffmpeg from auto-rotating based on metadata
-        # -metadata:s:v rotate=0 preserves original orientation
+        # Copy all metadata including rotation to preserve orientation
         cmd = [
             'ffmpeg', '-y', 
-            '-noautorotate',  # Don't auto-rotate based on metadata
             '-i', input_path,
             '-c:v', 'libx264',  # H.264 video codec
             '-preset', 'fast',   # Encoding speed
             '-crf', '23',        # Quality (lower = better, 23 is default)
             '-pix_fmt', 'yuv420p',  # Pixel format for compatibility
             '-movflags', '+faststart',  # Enable streaming
-            '-vf', 'transpose=2',  # Rotate 90 degrees clockwise to fix orientation
+            '-map_metadata', '0',  # Copy all metadata from input
+            '-c:a', 'copy',  # Copy audio without re-encoding
             output_path
         ]
         
