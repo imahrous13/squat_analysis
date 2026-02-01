@@ -315,9 +315,12 @@ class ExerciseDetector:
             # Additional Guards:
             # - Hip ROM must be low (Seated user shouldn't mimic squat motion)
             # - Ankle distance should be normal (Not split stance like lunge)
+            # - Body must NOT be horizontal (exclude lying bench press)
             ankle_dist_x = np.mean([abs(lm[27].x - lm[28].x) for lm in self.buffer])
             
-            if current_guess is None and is_vertical_torso and hands_in_chest_zone:
+            # CRITICAL: Exclude horizontal positions (lying bench press, push-ups, planks)
+            # Seated exercises require VERTICAL torso AND low horizontal ratio
+            if current_guess is None and is_vertical_torso and hands_in_chest_zone and horizontal_ratio < 0.4:
                 # Strict exclusions for Seated exercises
                 is_excluded_by_hip_movement = hip_rom_y > 0.10 # Relaxed from 0.06 to allow slight shift
                 is_excluded_by_stance = ankle_dist_x > 0.18 # Wide/Split stance = Lunge/Squat
