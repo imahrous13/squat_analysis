@@ -9,6 +9,7 @@ import numpy as np
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
 
+# Gym Analyzer v1.0.1
 # Internal imports
 from src.core.movenet_pose import MoveNetEstimator as PoseDetector
 from src.core.hybrid_pose import HybridPoseEstimator
