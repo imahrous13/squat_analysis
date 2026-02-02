@@ -15,12 +15,12 @@ class SquatAnalyzer:
         self.advice = ""
         self.prev_state = "STANDING"
         self.state_counter = 0 # Debounce counter
-        self.state_transition_threshold = 2 # Reduced for responsiveness
+        self.state_transition_threshold = 1 # Instant response
         
         # Thresholds (Balanced for stability - Relaxed Mode)
-        self.stand_threshold = 150 # Relaxed from 155 (Easier to lockout)
-        self.descend_threshold = 160 # Relaxed from 150 (Start descent earlier)
-        self.deep_threshold = 150     # Relaxed from 140 (Parallel is enough)
+        self.stand_threshold = 160 # Easier lockout
+        self.descend_threshold = 168 # Start descent very early
+        self.deep_threshold = 158     # Shallow depth counts (approx 1/4 squat)
         
         # Quality Metrics Data for current rep
         self.min_knee_angle = 180
