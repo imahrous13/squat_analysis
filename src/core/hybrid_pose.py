@@ -66,7 +66,7 @@ class HybridPoseEstimator:
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=1, # Use Balanced model for significantly better stability
+            model_complexity=0, # Reduced to 0 (Lite) for Cloud stability
             smooth_landmarks=True, # Enable smoothing to reduce jitter
             min_detection_confidence=min_pose_conf,
             min_tracking_confidence=min_pose_conf

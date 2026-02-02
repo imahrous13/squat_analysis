@@ -1,10 +1,12 @@
 import os
 # CRITICAL: Set environment variables BEFORE any other imports to prevent GPU crashes
+os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python' # Fixes common Cloud segfaults
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['MP_GPU_MODE'] = '0' 
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
+os.environ['XDG_RUNTIME_DIR'] = '/tmp/runtime-streamlit'
 
 import streamlit as st
 import cv2
@@ -579,6 +581,9 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     cap.release()
     if out: out.release()
     progress_bar.empty()
+    
+    import gc
+    gc.collect() # Crucial for Streamlit Cloud memory limits
 
 def main():
     st.set_page_config(page_title="AI Fitness Coach", layout="wide")

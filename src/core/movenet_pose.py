@@ -16,11 +16,11 @@ class MoveNetEstimator:
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=1,              # Increased from 0 to 1 for better accuracy
-            smooth_landmarks=True,           # Enable smoothing to reduce jitter
-            enable_segmentation=False,       # Disable segmentation for performance
-            min_detection_confidence=0.6,    # Increased from 0.5 for more reliable detection
-            min_tracking_confidence=0.7      # Increased from 0.5 for smoother tracking
+            model_complexity=0,              # Reduced to 0 (Lite) for Cloud memory limits
+            smooth_landmarks=True,           
+            enable_segmentation=False,       
+            min_detection_confidence=0.6,    
+            min_tracking_confidence=0.7      
         )
         self.last_landmarks = None
         
