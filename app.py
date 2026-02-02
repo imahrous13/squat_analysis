@@ -1,11 +1,20 @@
+import os
+# CRITICAL: Set environment variables BEFORE any other imports to prevent crashes on Cloud
+os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['MP_GPU_MODE'] = '0' 
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
+
 import streamlit as st
 import cv2
 import tempfile
-import os
 import time
 import subprocess
 import mediapipe as mp
 import numpy as np
+import gc
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
 
@@ -31,45 +40,24 @@ RTC_CONFIGURATION = RTCConfiguration(
 )
 
 def reencode_video_for_browser(input_path, output_path=None):
-    """Re-encode video using ffmpeg for browser compatibility."""
-    # If input doesn't exist, return it as-is
-    if not os.path.exists(input_path):
-        return input_path
-    
-    if output_path is None:
-        output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-    
+    """Re-encode using PyAV for maximum compatibility on both Windows (no FFmpeg) and Cloud."""
+    if not os.path.exists(input_path): return input_path, "Not found"
+    if output_path is None: output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
     try:
-        # Check if ffmpeg is available
-        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-
-        # Use ffmpeg to re-encode with H.264 codec for maximum browser compatibility
-        # Copy all metadata including rotation to preserve orientation
-        cmd = [
-            'ffmpeg', '-y', 
-            '-i', input_path,
-            '-c:v', 'libx264',  # H.264 video codec
-            '-preset', 'fast',   # Encoding speed
-            '-crf', '23',        # Quality (lower = better, 23 is default)
-            '-pix_fmt', 'yuv420p',  # Pixel format for compatibility
-            '-movflags', '+faststart',  # Enable streaming
-            '-map_metadata', '0',  # Copy all metadata from input
-            '-c:a', 'copy',  # Copy audio without re-encoding
-            output_path
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        
-        if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-            return output_path
-        else:
-            return input_path # Fallback silently
-            
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        # FFmpeg not found or error
-        return input_path
-    except Exception as e:
-        return input_path
+        import av
+        input_container = av.open(input_path)
+        output_container = av.open(output_path, mode='w', format='mp4')
+        in_stream = input_container.streams.video[0]
+        out_stream = output_container.add_stream('libx264', rate=in_stream.base_rate)
+        out_stream.width, out_stream.height = in_stream.width, in_stream.height
+        out_stream.pix_fmt = 'yuv420p'
+        out_stream.options = {'preset': 'veryfast', 'crf': '23'}
+        for frame in input_container.decode(video=0):
+            for packet in out_stream.encode(frame): output_container.mux(packet)
+        for packet in out_stream.encode(): output_container.mux(packet)
+        input_container.close(); output_container.close()
+        return output_path, None
+    except Exception as e: return input_path, str(e)
 
 
 class BaseVideoProcessor(VideoProcessorBase):
@@ -403,22 +391,31 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     if rotation_code is not None:
         width, height = height, width
 
-    # Use H264 codec for better browser compatibility
+    # Robust VideoWriter selection for both Local and Cloud
+    out = None
     try:
-        fourcc = cv2.VideoWriter_fourcc(*'H264')
+        # Standard MJPG - most compatible with raw server containers
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        
         if not out.isOpened():
-            raise Exception("H264 failed")
-    except:
-        try:
-            fourcc = cv2.VideoWriter_fourcc(*'X264')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-            if not out.isOpened():
-                raise Exception("X264 failed")
-        except:
-            # Fallback to mp4v
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+             # Fallback 1: XVID
+             fourcc = cv2.VideoWriter_fourcc(*'XVID')
+             out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+             
+        if not out.isOpened():
+             # Fallback 2: mp4v
+             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+             out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+             
+        if not out.isOpened():
+             # Fallback 3: MJPG raw (0)
+             out = cv2.VideoWriter(output_path, 0, fps, (width, height))
+    except Exception as e:
+        print(f"Video Writer Failed: {str(e)}")
+        # Create an empty file to avoid downstream errors
+        open(output_path, 'a').close()
+        return output_path
 
     exercise_detector = ExerciseDetector()
     analyzers = {
@@ -585,7 +582,8 @@ def main():
                 
                 # Re-encode for browser compatibility
                 with st.spinner('Optimizing video for playback...'):
-                    output_path = reencode_video_for_browser(temp_output)
+                    output_path, err = reencode_video_for_browser(temp_output)
+                    if err: st.warning(f"Optimization warning: {err}")
                     
                 st.success("Done!")
                 st.video(output_path)
@@ -639,7 +637,8 @@ def main():
                 if not hasattr(st.session_state, 'webcam_recording_encoded') or \
                    st.session_state.webcam_recording_encoded != st.session_state.webcam_recording:
                     with st.spinner('Optimizing video for playback...'):
-                        encoded_path = reencode_video_for_browser(st.session_state.webcam_recording)
+                        encoded_path, err = reencode_video_for_browser(st.session_state.webcam_recording)
+                        if err: st.warning(f"Optimization warning: {err}")
                         st.session_state.webcam_recording_display = encoded_path
                         st.session_state.webcam_recording_encoded = st.session_state.webcam_recording
                 
@@ -657,7 +656,7 @@ def main():
                 if st.button("🗑️ Clear Recording"):
                     if os.path.exists(st.session_state.webcam_recording):
                         os.remove(st.session_state.webcam_recording)
-                    st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+                    st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.avi').name
                     st.rerun()
             elif os.path.exists(st.session_state.webcam_recording) and os.path.getsize(st.session_state.webcam_recording) > 0:
                 st.warning("Recording was too short or could not be processed.")
