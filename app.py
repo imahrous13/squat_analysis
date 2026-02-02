@@ -12,7 +12,6 @@ import cv2
 import tempfile
 import time
 import subprocess
-import mediapipe as mp
 import numpy as np
 import gc
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
@@ -74,6 +73,11 @@ def get_analyzer_class(exercise_type):
 def get_utils():
     from src.core.utils import draw_text_with_background, get_landmark_pixel
     return draw_text_with_background, get_landmark_pixel
+
+def get_mp_pose():
+    """Lazy load MediaPipe pose module"""
+    import mediapipe as mp
+    return mp.solutions.pose
 
 # RTC Configuration for WebRTC
 RTC_CONFIGURATION = RTCConfiguration(
@@ -301,9 +305,10 @@ class SquatVideoProcessor(BaseVideoProcessor):
         super().__init__(get_analyzer_class("Squat"), recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
         _, get_landmark_pixel = get_utils()
-        for side in [mp.solutions.pose.PoseLandmark.LEFT_KNEE, mp.solutions.pose.PoseLandmark.RIGHT_KNEE]:
+        mp_pose = get_mp_pose()
+        for side in [mp_pose.PoseLandmark.LEFT_KNEE, mp_pose.PoseLandmark.RIGHT_KNEE]:
             pos = get_landmark_pixel(landmarks[side.value], w, h)
-            angle = analysis_data.get('l_knee_angle' if side == mp.solutions.pose.PoseLandmark.LEFT_KNEE else 'r_knee_angle', 0)
+            angle = analysis_data.get('l_knee_angle' if side == mp_pose.PoseLandmark.LEFT_KNEE else 'r_knee_angle', 0)
             if angle > 0:
                 cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
@@ -312,11 +317,12 @@ class PushUpVideoProcessor(BaseVideoProcessor):
         super().__init__(get_analyzer_class("Push-Up"), recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
         _, get_landmark_pixel = get_utils()
+        mp_pose = get_mp_pose()
         angle = analysis_data.get('elbow_angle', 0)
         if angle > 0:
-            l_vis = landmarks[mp.solutions.pose.PoseLandmark.LEFT_ELBOW.value].visibility
-            r_vis = landmarks[mp.solutions.pose.PoseLandmark.RIGHT_ELBOW.value].visibility
-            target = mp.solutions.pose.PoseLandmark.LEFT_ELBOW if l_vis > r_vis else mp.solutions.pose.PoseLandmark.RIGHT_ELBOW
+            l_vis = landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].visibility
+            r_vis = landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value].visibility
+            target = mp_pose.PoseLandmark.LEFT_ELBOW if l_vis > r_vis else mp_pose.PoseLandmark.RIGHT_ELBOW
             pos = get_landmark_pixel(landmarks[target.value], w, h)
             cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
@@ -329,9 +335,10 @@ class LungeVideoProcessor(BaseVideoProcessor):
         super().__init__(get_analyzer_class("Lunge"), recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
         _, get_landmark_pixel = get_utils()
+        mp_pose = get_mp_pose()
         lead = analysis_data.get('lead_leg')
         if lead:
-            target = mp.solutions.pose.PoseLandmark.LEFT_KNEE if lead == "LEFT" else mp.solutions.pose.PoseLandmark.RIGHT_KNEE
+            target = mp_pose.PoseLandmark.LEFT_KNEE if lead == "LEFT" else mp_pose.PoseLandmark.RIGHT_KNEE
             pos = get_landmark_pixel(landmarks[target.value], w, h)
             angle = analysis_data.get('l_knee_angle' if lead == 'LEFT' else 'r_knee_angle', 0)
             cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
@@ -349,11 +356,12 @@ class BenchPressVideoProcessor(BaseVideoProcessor):
         super().__init__(get_analyzer_class("Bench Press"), recording_path, use_hybrid, variant="standard")
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
         _, get_landmark_pixel = get_utils()
+        mp_pose = get_mp_pose()
         angle = analysis_data.get('elbow_angle', 0)
         if angle > 0:
-            l_vis = landmarks[mp.solutions.pose.PoseLandmark.LEFT_ELBOW.value].visibility
-            r_vis = landmarks[mp.solutions.pose.PoseLandmark.RIGHT_ELBOW.value].visibility
-            target = mp.solutions.pose.PoseLandmark.LEFT_ELBOW if l_vis > r_vis else mp.solutions.pose.PoseLandmark.RIGHT_ELBOW
+            l_vis = landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].visibility
+            r_vis = landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW.value].visibility
+            target = mp_pose.PoseLandmark.LEFT_ELBOW if l_vis > r_vis else mp_pose.PoseLandmark.RIGHT_ELBOW
             pos = get_landmark_pixel(landmarks[target.value], w, h)
             cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
