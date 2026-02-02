@@ -12,15 +12,15 @@ class MoveNetLandmark:
 
 class MoveNetEstimator:
     def __init__(self, model_path=None):
-        # Optimized MediaPipe configuration for side-view exercises
+        # Optimized MediaPipe configuration for Cloud stability
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=1,              # Increased from 0 to 1 for better accuracy
-            smooth_landmarks=True,           # Enable smoothing to reduce jitter
-            enable_segmentation=False,       # Disable segmentation for performance
-            min_detection_confidence=0.6,    # Increased from 0.5 for more reliable detection
-            min_tracking_confidence=0.7      # Increased from 0.5 for smoother tracking
+            model_complexity=0,              # Lite model for Cloud memory limits
+            smooth_landmarks=True,
+            enable_segmentation=False,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
         self.last_landmarks = None
         

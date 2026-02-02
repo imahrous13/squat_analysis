@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 import mediapipe as mp
-from ultralytics import YOLO
 
 class RoiManager:
     def __init__(self, padding_pct=0.2, smooth_factor=0.3):
@@ -61,13 +60,15 @@ class HybridPoseEstimator:
     Drop-in replacement for PoseDetector.
     """
     def __init__(self, model_path='yolov8n.pt', min_detection_conf=0.5, min_pose_conf=0.5):
+        # Lazy load YOLO only when hybrid mode is explicitly requested
+        from ultralytics import YOLO
         self.yolo = YOLO(model_path)
         self.roi_manager = RoiManager(padding_pct=0.25)
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=1, # Use Balanced model for significantly better stability
-            smooth_landmarks=True, # Enable smoothing to reduce jitter
+            model_complexity=0,  # Lite model for Cloud memory limits
+            smooth_landmarks=True,
             min_detection_confidence=min_pose_conf,
             min_tracking_confidence=min_pose_conf
         )
