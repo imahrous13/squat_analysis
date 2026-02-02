@@ -60,9 +60,15 @@ class HybridPoseEstimator:
     """
     def __init__(self, model_path='yolov8n.pt', min_detection_conf=0.5, min_pose_conf=0.5):
         from ultralytics import YOLO
-        from mediapipe.solutions import pose as mp_pose
-        from mediapipe.solutions import drawing_utils as mp_drawing
         
+        try:
+            from mediapipe.solutions import pose as mp_pose
+            from mediapipe.solutions import drawing_utils as mp_drawing
+        except ImportError:
+            import mediapipe as mp
+            mp_pose = mp.solutions.pose
+            mp_drawing = mp.solutions.drawing_utils
+            
         self.yolo = YOLO(model_path)
         self.roi_manager = RoiManager(padding_pct=0.25)
         self.mp_pose = mp_pose
