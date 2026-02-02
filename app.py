@@ -6,6 +6,8 @@ os.environ['MP_GPU_MODE'] = '0'
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32' # Save memory
+os.environ['OMP_NUM_THREADS'] = '1' # Reduce CPU spikes on shared cloud
 os.environ['XDG_RUNTIME_DIR'] = '/tmp/runtime-streamlit'
 os.makedirs(os.environ['XDG_RUNTIME_DIR'], exist_ok=True)
 
@@ -17,6 +19,13 @@ import subprocess
 import mediapipe as mp
 import numpy as np
 import gc
+
+# Headless stability for AI libraries
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+except: pass
+
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
 

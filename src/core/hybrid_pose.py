@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 import mediapipe as mp
-from ultralytics import YOLO
 
 class RoiManager:
     def __init__(self, padding_pct=0.2, smooth_factor=0.3):
