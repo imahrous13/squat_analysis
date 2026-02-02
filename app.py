@@ -363,7 +363,7 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps <= 0 or fps > 60: fps = 20.0
     
-    st.info(f"⚙️ Processing: {width}x{height} @ {fps} FPS")
+    # Silent processing for better UX
     
     if use_hybrid and os.path.exists('yolov8n.pt'):
         detector = HybridPoseEstimator(model_path='yolov8n.pt')
@@ -417,13 +417,9 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
-        if out.isOpened():
-             st.write("✅ Using Codec: MJPG")
-             
         if not out.isOpened():
              fourcc = cv2.VideoWriter_fourcc(*'XVID')
              out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-             if out.isOpened(): st.write("✅ Using Codec: XVID")
              
         if not out.isOpened():
              # Last resort fallbacks
