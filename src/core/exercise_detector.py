@@ -271,9 +271,9 @@ class ExerciseDetector:
                 ankle_dists = [ abs(lm[27].x - lm[28].x) for lm in self.buffer ]
                 avg_ankle_dist = np.mean(ankle_dists)
                 
-                # Lunge indicators:
-                is_lunge = (avg_knee_diff > 0.12 and avg_ankle_dist > 0.22) or \
-                           (knee_diff_rom > 0.08 and avg_ankle_dist > 0.20)
+                # Lunge indicators: (RELAXED THRESHOLDS)
+                is_lunge = (avg_knee_diff > 0.08 and avg_ankle_dist > 0.15) or \
+                           (knee_diff_rom > 0.06 and avg_ankle_dist > 0.15)
                 
                 if is_lunge:
                     current_guess = "Lunge"
@@ -303,9 +303,17 @@ class ExerciseDetector:
                         r_angles = [get_angle(lm[12], lm[14], lm[16]) for lm in self.buffer]
                         avg_elbow_rom = ((max(l_angles)-min(l_angles)) + (max(r_angles)-min(r_angles))) / 2
                         
-                        # Typical Dips: > 60 deg change. Squats: < 20 deg change.
-                        # Also keep hand check as secondary guard? No, angle determines mechanism.
-                        if avg_elbow_rom > 35:
+                        # Check Hand Height
+                        # Dips: Hands must be LOW (near hips/waist)
+                        # Squats: Hands usually HIGH (shoulders/chest) or swinging
+                        wrist_y_avg = np.mean([np.mean([lm[15].y, lm[16].y]) for lm in self.buffer])
+                        shoulder_y_avg = np.mean([np.mean([lm[11].y, lm[12].y]) for lm in self.buffer])
+                        hip_y_avg = np.mean([np.mean([lm[23].y, lm[24].y]) for lm in self.buffer])
+                        
+                        hands_below_shoulders = wrist_y_avg > (shoulder_y_avg + 0.1) # Y increases down
+                        
+                        # Typical Dips: > 35 deg change AND Hands Low
+                        if avg_elbow_rom > 35 and hands_below_shoulders:
                             current_guess = "Dips"
                         else:
                             current_guess = "Squat"
@@ -344,7 +352,8 @@ class ExerciseDetector:
                     r_angles = [get_angle(lm[12], lm[14], lm[16]) for lm in self.buffer]
                     avg_elbow_rom = ((max(l_angles)-min(l_angles)) + (max(r_angles)-min(r_angles))) / 2
 
-                    if arm_spread_rom > 0.15 and avg_elbow_rom < 45:
+                    # Relaxed Elbow ROM for Flys (up to 55 deg allowed) to account for form variation
+                    if arm_spread_rom > 0.15 and avg_elbow_rom < 55:
                         # Seated (Butterfly Machine) has almost ZERO hip vertical movement
                         if hip_rom_y < 0.04 and horizontal_ratio < 0.2:
                             current_guess = "Seated Chest Fly"
@@ -373,10 +382,13 @@ class ExerciseDetector:
                         # Y increases downwards. So Wrist > Shoulder means Wrist is Lower.
                         hands_are_low = avg_wrist_y > (avg_shoulder_y + 0.10)
                         
+                        # Check against wide arm spread (Flys should not trigger Dips)
+                        is_wide_spread = arm_spread_rom > 0.15
+                        
                         # 2. SEATED DIPS (Tricep Press)
                         # High Elbow ROM + (Hands Low OR Dominant Vertical Movement)
-                        # Relaxed X-ROM check because oblique angles cause X movement projection
-                        if combined_elbow_rom > 0.06 and (hands_are_low or (wrist_rom_y > 0.08 and wrist_rom_x < 0.10)):
+                        # Guard: NOT wide arm spread (prevents Flys)
+                        if combined_elbow_rom > 0.06 and not is_wide_spread and (hands_are_low or (wrist_rom_y > 0.08 and wrist_rom_x < 0.10)):
                             current_guess = "Seated Dips"
                             
                         # 3. SEATED BENCH PRESS
