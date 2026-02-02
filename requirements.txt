@@ -1,8 +1,8 @@
 streamlit
 opencv-python-headless
-mediapipe==0.10.0
-protobuf==3.20.3
-numpy<2.0.0
+mediapipe
+protobuf
+numpy
 streamlit-webrtc
 av
-# ultralytics (Disabled temporarily to fix installation)
+ultralytics
