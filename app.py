@@ -9,6 +9,11 @@ import numpy as np
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
 
+# Suppress MediaPipe and TF logging/GPU issues
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['MP_GPU_MODE'] = '0' # Attempt to force CPU
+os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
+
 # Gym Analyzer v1.0.1
 # Internal imports
 from src.core.movenet_pose import MoveNetEstimator as PoseDetector
@@ -403,22 +408,26 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     if rotation_code is not None:
         width, height = height, width
 
-    # Use H264 codec for better browser compatibility
+    # Robust VideoWriter Selection
+    out = None
     try:
-        fourcc = cv2.VideoWriter_fourcc(*'H264')
+        # Try H.264 (AVC) - most browser compatible
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v') # SAFEST START for writing
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         if not out.isOpened():
-            raise Exception("H264 failed")
-    except:
-        try:
-            fourcc = cv2.VideoWriter_fourcc(*'X264')
+            # Try MJPEG as ultra-fallback if needed, but mp4v usually works
+            fourcc = cv2.VideoWriter_fourcc(*'avc1')
             out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-            if not out.isOpened():
-                raise Exception("X264 failed")
-        except:
-            # Fallback to mp4v
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            
+        if not out.isOpened():
+             # Last resort
+             fourcc = cv2.VideoWriter_fourcc(*'H264')
+             out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    except Exception as e:
+        st.error(f"Video Writer Error: {str(e)}")
+        # If all fail, create an empty file to avoid downstream crashes
+        open(output_path, 'a').close()
+        return output_path
 
     exercise_detector = ExerciseDetector()
     analyzers = {
@@ -481,7 +490,12 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                         analyzer.feedback = "Exercise Detected! Rep 1 counted."
             
             if analyzer:
-                analysis_data = analyzer.analyze(landmarks, width, height)
+                try:
+                    analysis_data = analyzer.analyze(landmarks, width, height)
+                except Exception as e:
+                    # Fallback on analyzer error
+                    print(f"Analyzer Error: {e}")
+                    analysis_data = {"feedback": "Processing error, skipping frame...", "state": "ERROR", "rep_count": 0, "correct_reps": 0, "incorrect_reps": 0, "target_muscles": "N/A"}
             else:
                 buffer_size = len(exercise_detector.buffer)
                 required_size = int(exercise_detector.window_size * 0.7)
@@ -490,22 +504,29 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                 
                 feedback_msg = "Analyzing exercise pattern..."
                 if buffer_size < required_size:
-                    progress = int((buffer_size / required_size) * 100)
-                    feedback_msg = f"Collecting data... {progress}%"
+                    feedback_msg += f" ({buffer_size}/{required_size} frames)"
                 elif votes_size < required_votes:
-                    progress = int((votes_size / required_votes) * 100)
-                    feedback_msg = f"Analyzing pattern... {progress}%"
-                    if exercise_detector.last_guess:
-                        feedback_msg += f" (Detecting: {exercise_detector.last_guess})"
+                    feedback_msg += f" (Confidence {votes_size}/{required_votes})"
                 
                 analysis_data = {
                     "state": "ANALYZING...", 
                     "rep_count": 0, 
+                    "correct_reps": 0, 
+                    "incorrect_reps": 0, 
                     "feedback": feedback_msg, 
-                    "target_muscles": "Detecting...",
-                    "correct_reps": 0,
-                    "incorrect_reps": 0
+                    "advice": "", 
+                    "last_rep_score": 0, 
+                    "reasons": [], 
+                    "view": "N/A", 
+                    "target_muscles": "N/A", 
+                    "l_knee_angle": 0, 
+                    "r_knee_angle": 0
                 }
+
+            if out and out.isOpened():
+                out.write(frame)
+            frame_count += 1
+            if total_frames > 0: progress_bar.progress(frame_count / total_frames)
 
             state_color = (0, 255, 255)
             if analysis_data.get('state') in ["BOTTOM", "LOCKOUT", "TOP_PLANK"]: state_color = (0, 255, 0)
@@ -546,12 +567,13 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                     draw_text_with_background(frame, f"Fault: {r}", (10, y_pos), text_color=(0, 0, 255), font_scale=0.5)
                     y_pos += 25
 
-        out.write(frame)
+        if out and out.isOpened():
+            out.write(frame)
         frame_count += 1
         if total_frames > 0: progress_bar.progress(frame_count / total_frames)
 
     cap.release()
-    out.release()
+    if out: out.release()
     progress_bar.empty()
 
 def main():
