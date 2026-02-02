@@ -37,48 +37,47 @@ RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 def reencode_video_for_browser(input_path, output_path=None):
-    """Re-encode video using ffmpeg for browser compatibility."""
+    """Re-encode video using PyAV (internal) for browser compatibility, avoiding external ffmpeg binary."""
     if not os.path.exists(input_path):
         return input_path, "Input file not found."
     
     if output_path is None:
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
 
-    # Try to find ffmpeg
-    ffmpeg_cmd = "ffmpeg"
     try:
-        subprocess.run(['ffmpeg', '-version'], capture_output=True)
-    except:
-        if os.name == 'nt': # Windows
-             return input_path, "FFmpeg not found on your Windows machine. To enable video re-encoding, please install FFmpeg and add it to your PATH."
-        # On Linux/Cloud, we check local bin
-        if os.path.exists("ffmpeg"): ffmpeg_cmd = "./ffmpeg"
-        else:
-            return input_path, "FFmpeg is missing on the server. Skipping optimization."
+        import av
+        input_container = av.open(input_path)
+        output_container = av.open(output_path, mode='w', format='mp4')
+        
+        # We assume first video stream
+        in_stream = input_container.streams.video[0]
+        
+        # Configure output stream: H.264 with high compatibility
+        out_stream = output_container.add_stream('libx264', rate=in_stream.base_rate)
+        out_stream.width = in_stream.width
+        out_stream.height = in_stream.height
+        out_stream.pix_fmt = 'yuv420p' # Crucial for browser playback
+        out_stream.options = {'preset': 'veryfast', 'crf': '23'}
 
-    try:
-        # High-compatibility command: H.264, YUV420p, no audio
-        cmd = [
-            ffmpeg_cmd, '-y', 
-            '-i', input_path,
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-preset', 'veryfast',
-            '-movflags', '+faststart',
-            '-an',
-            output_path
-        ]
+        for frame in input_container.decode(video=0):
+            # Convert frame to output stream's pixel format
+            for packet in out_stream.encode(frame):
+                output_container.mux(packet)
+
+        # Flush output
+        for packet in out_stream.encode():
+            output_container.mux(packet)
+
+        input_container.close()
+        output_container.close()
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        
-        if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return output_path, None
         else:
-            err_msg = result.stderr[-200:] if result.stderr else "Unknown error"
-            return input_path, f"Optimization failed: {err_msg}. Note: libx264 might be missing if this is a custom server."
-            
+            return input_path, "Re-encoding produced an empty file."
+
     except Exception as e:
-        return input_path, f"Optimization server error: {str(e)}"
+        return input_path, f"Internal re-encoding failed: {str(e)}. Please ensure 'av' library is properly installed."
 
 
 class BaseVideoProcessor(VideoProcessorBase):
