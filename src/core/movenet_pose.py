@@ -12,11 +12,9 @@ class MoveNetLandmark:
 class MoveNetEstimator:
     def __init__(self, model_path=None):
         # Optimized MediaPipe configuration for side-view exercises
-        from mediapipe.solutions import pose as mp_pose
-        from mediapipe.solutions import drawing_utils as mp_drawing
-        
-        self.mp_pose = mp_pose
-        self.mp_drawing = mp_drawing
+        import mediapipe as mp
+        self.mp_pose = mp.solutions.pose
+        self.mp_drawing = mp.solutions.drawing_utils
         
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
