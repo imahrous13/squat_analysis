@@ -18,9 +18,9 @@ class SquatAnalyzer:
         self.state_transition_threshold = 2 # Reduced for responsiveness
         
         # Thresholds (Balanced for stability - Relaxed Mode)
-        self.stand_threshold = 155 # Relaxed from 165
-        self.descend_threshold = 150 # Relaxed from 145
-        self.deep_threshold = 140     # Relaxed from 125
+        self.stand_threshold = 150 # Relaxed from 155 (Easier to lockout)
+        self.descend_threshold = 160 # Relaxed from 150 (Start descent earlier)
+        self.deep_threshold = 150     # Relaxed from 140 (Parallel is enough)
         
         # Quality Metrics Data for current rep
         self.min_knee_angle = 180
