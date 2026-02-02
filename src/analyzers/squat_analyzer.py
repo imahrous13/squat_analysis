@@ -217,7 +217,6 @@ class SquatAnalyzer:
         elif heel_lift_detected: feed_override = "Keep Heels Down!"
         
         if self.state == "STANDING":
-        if self.state == "STANDING":
             # Only check symmetry in FRONT view. In SIDE view, one leg is hidden/different.
             knee_diff = abs(l_knee_angle - r_knee_angle) if view == "FRONT" else 0
             
