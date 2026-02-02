@@ -466,6 +466,14 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
         if rotation_code is not None:
             frame = cv2.rotate(frame, rotation_code)
         
+        # Default data for frames with no landmarks
+        analysis_data = {
+            "state": "NO PERSON", "rep_count": 0, "correct_reps": 0, "incorrect_reps": 0,
+            "feedback": "Looking for person...", "advice": "", "last_rep_score": 0,
+            "reasons": [], "view": "N/A", "target_muscles": "N/A"
+        }
+        state_color = (0, 255, 255)
+
         frame, _ = detector.find_pose(frame, draw=True)
         landmarks = detector.get_landmarks()
         
