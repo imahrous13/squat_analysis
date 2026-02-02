@@ -9,6 +9,10 @@ class ExerciseDetector:
         self.exercises = ["Squat", "Deadlift", "Push-Up", "Bench Press", "Seated Bench Press", "Lunge", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips"]
         self.last_guess = None  # Track last guess for debugging
         
+    def _get_angle(self, a, b, c):
+        ang = np.degrees(np.arctan2(c.y-b.y, c.x-b.x) - np.arctan2(a.y-b.y, a.x-b.x))
+        return abs(ang) if abs(ang) < 180 else 360 - abs(ang)
+        
     def add_frame(self, landmarks):
         if landmarks:
             self.buffer.append(landmarks)
@@ -86,6 +90,11 @@ class ExerciseDetector:
         hands_above_shoulders = [ (lm[15].y < lm[11].y or lm[16].y < lm[12].y) for lm in self.buffer ]
         arm_spread_std = get_std_x_diff(15, 16)
         leg_spread_std = get_std_x_diff(27, 28)
+        
+        # Calculate Arm Spread ROM (Fly differentiation)
+        # 15=Left Wrist, 16=Right Wrist
+        arm_spread_dists = [abs(lm[15].x - lm[16].x) for lm in self.buffer]
+        arm_spread_rom = max(arm_spread_dists) - min(arm_spread_dists)
         
         current_guess = None
         
@@ -285,6 +294,15 @@ class ExerciseDetector:
 
                 is_lunge = is_knee_asymmetric or is_standard_lunge or is_dynamic_lunge
                 
+                # GUARD: Seated Flys often have wide feet (asymmetric look) but huge arm spread
+                # Lunges usually have fixed arm width (holding weights)
+                # If arms are flapping (Fly) and hips are static (Seated), it's NOT a Lunge
+                # RELAXED THRESHOLDS: Allow more hip movement (0.12) and less arm spread (0.12)
+                if is_lunge and arm_spread_rom > 0.12 and hip_rom_y < 0.12:
+                     # Exception: If knee asymmetry is EXTREME (>0.25), might really be a lunge
+                     if avg_knee_diff < 0.25:
+                        is_lunge = False
+                
                 if is_lunge:
                     current_guess = "Lunge"
                 else:
@@ -298,35 +316,34 @@ class ExerciseDetector:
                     if torso_rom > 0.10 and sum(hands_low_frames) > self.window_size * 0.65:
                         current_guess = "Deadlift"
                     elif hip_rom > 0.08:  # Further reduced threshold for squat detection
-                        # Differentiate Squat vs Dips
-                        # Logic:
-                        # 1. Hands: Fixed (Dips/Assisted Squat) vs Moving (Standard Squat)
-                        # 2. Legs: Rigid (Dips) vs Compressing (Squats)
+                        # Differentiate Squat vs Dips using KNEE ANGLE ROM
+                        # Squats: Massive Knee Flexion (180 -> 90 -> 180). High Knee ROM.
+                        # Dips: Knees Static (Straight or Bent 90). Low Knee ROM.
                         
-                        # 1. Elbow Angle Check: DIFFERENTIATOR
-                        # Dips: High Elbow ROM (Extension 90->180). Squats: Static Arms (Holding Bar).
-                        def get_angle(a, b, c):
-                            ang = np.degrees(np.arctan2(c.y-b.y, c.x-b.x) - np.arctan2(a.y-b.y, a.x-b.x))
-                            return abs(ang) if abs(ang) < 180 else 360 - abs(ang)
-
-                        l_angles = [get_angle(lm[11], lm[13], lm[15]) for lm in self.buffer]
-                        r_angles = [get_angle(lm[12], lm[14], lm[16]) for lm in self.buffer]
-                        avg_elbow_rom = ((max(l_angles)-min(l_angles)) + (max(r_angles)-min(r_angles))) / 2
+                        l_knee_angles = [self._get_angle(lm[23], lm[25], lm[27]) for lm in self.buffer]
+                        r_knee_angles = [self._get_angle(lm[24], lm[26], lm[28]) for lm in self.buffer]
                         
-                        # Check Hand Height
-                        # Dips: Hands must be LOW (near hips/waist)
-                        # Squats: Hands usually HIGH (shoulders/chest) or swinging
-                        wrist_y_avg = np.mean([np.mean([lm[15].y, lm[16].y]) for lm in self.buffer])
-                        shoulder_y_avg = np.mean([np.mean([lm[11].y, lm[12].y]) for lm in self.buffer])
-                        hip_y_avg = np.mean([np.mean([lm[23].y, lm[24].y]) for lm in self.buffer])
+                        # Calculate ROM (Max - Min)
+                        l_knee_rom = max(l_knee_angles) - min(l_knee_angles)
+                        r_knee_rom = max(r_knee_angles) - min(r_knee_angles)
+                        avg_knee_rom = (l_knee_rom + r_knee_rom) / 2
                         
-                        hands_below_shoulders = wrist_y_avg > (shoulder_y_avg + 0.1) # Y increases down
-                        
-                        # Typical Dips: > 35 deg change AND Hands Low
-                        if avg_elbow_rom > 35 and hands_below_shoulders:
-                            current_guess = "Dips"
-                        else:
+                        # Squats typically have > 30 degrees change. Dips have < 15.
+                        if avg_knee_rom > 20: 
                             current_guess = "Squat"
+                        else:
+                            # If knees aren't bending, it might be Dips OR user just standing
+                            # Check Arm Movement (Elbow ROM) for Dips
+                            l_elbow_angles = [self._get_angle(lm[11], lm[13], lm[15]) for lm in self.buffer]
+                            r_elbow_angles = [self._get_angle(lm[12], lm[14], lm[16]) for lm in self.buffer]
+                            avg_elbow_rom = ((max(l_elbow_angles)-min(l_elbow_angles)) + (max(r_elbow_angles)-min(r_elbow_angles))) / 2
+                            
+                            # Check Hand Height (Dips hands vary relative to shoulder due to body moving)
+                            # But generally Dips are arm-driven.
+                            if avg_elbow_rom > 30:
+                                current_guess = "Dips"
+                            else:
+                                current_guess = "Squat" # Default to Squat if unsure but hips moving (could be partial)
 
             # 2. CHECK SEATED / UPPER BODY EXERCISES (Fly, Press)
             # Only if no leg exercise detected AND NOT CLEARLY STANDING
@@ -340,16 +357,25 @@ class ExerciseDetector:
             # Seated exercises require VERTICAL torso AND low horizontal ratio
             if current_guess is None and is_vertical_torso and hands_in_chest_zone and horizontal_ratio < 0.4:
                 # Strict exclusions for Seated exercises
-                is_excluded_by_hip_movement = hip_rom_y > 0.10 # Relaxed from 0.06 to allow slight shift
+                # SQUAT GUARD: If hips are moving significantly (> 0.08), it is NOT a seated exercise
+                # Seated classification usually means hips are planted.
+                is_excluded_by_hip_movement = hip_rom_y > 0.08  # Stricter exclusion (was 0.10)
                 is_excluded_by_stance = ankle_dist_x > 0.18 # Wide/Split stance = Lunge/Squat
                 
-                # Removed is_excluded_by_standing check as it blocks legitimate Seated exercises (Dips/Press)
-                if not (is_excluded_by_hip_movement or is_excluded_by_stance):
+                # EXCEPTION: Allow wide stance if it's clearly a Chest Fly (Arm Spread Motion)
+                if arm_spread_rom > 0.15:
+                    is_excluded_by_stance = False
+
+                # Check for Knee Movement Check (Double Guard against dynamic squats)
+                l_knee_angles = [self._get_angle(lm[23], lm[25], lm[27]) for lm in self.buffer]
+                r_knee_angles = [self._get_angle(lm[24], lm[26], lm[28]) for lm in self.buffer]
+                max_knee_rom = max(max(l_knee_angles)-min(l_knee_angles), max(r_knee_angles)-min(r_knee_angles))
+                is_excluded_by_knee_movement = max_knee_rom > 25 # If knees bending > 25 deg, likely Squat/Stand
+                
+                if not (is_excluded_by_hip_movement or is_excluded_by_stance or is_excluded_by_knee_movement):
                     # 1. CHEST FLY (Hand-to-Hand distance changes significantly)
                     # Switched to ROM check (Max - Min) for robustness
                     # Flys have large width change (>0.15). Press has fixed width (<0.10).
-                    arm_spread_dists = [abs(lm[15].x - lm[16].x) for lm in self.buffer]
-                    arm_spread_rom = max(arm_spread_dists) - min(arm_spread_dists)
                     
                     # Elbow Angle ROM Check: DIFFERENTIATOR
                     # Press: Elbows Extend (Angle changes 90->180, ROM > 60).
@@ -363,9 +389,11 @@ class ExerciseDetector:
                     avg_elbow_rom = ((max(l_angles)-min(l_angles)) + (max(r_angles)-min(r_angles))) / 2
 
                     # Relaxed Elbow ROM for Flys (up to 55 deg allowed) to account for form variation
-                    if arm_spread_rom > 0.15 and avg_elbow_rom < 55:
+                    # Harmonized threshold with Lunge guard (0.12)
+                    if arm_spread_rom > 0.12 and avg_elbow_rom < 55:
                         # Seated (Butterfly Machine) has almost ZERO hip vertical movement
-                        if hip_rom_y < 0.04 and horizontal_ratio < 0.2:
+                        # Relaxed slightly to 0.08 to catch seated users who shift slightly
+                        if hip_rom_y < 0.08 and horizontal_ratio < 0.2:
                             current_guess = "Seated Chest Fly"
                         else:
                             current_guess = "Chest Fly"
