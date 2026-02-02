@@ -363,9 +363,9 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0 or fps > 60: fps = 20.0 # Default fallback
+    if fps <= 0 or fps > 60: fps = 20.0
     
-
+    st.write(f"🎞️ Video Details: {width}x{height} @ {fps} FPS")
     
     if use_hybrid and os.path.exists('yolov8n.pt'):
         detector = HybridPoseEstimator(model_path='yolov8n.pt')
@@ -424,15 +424,22 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
              fourcc = cv2.VideoWriter_fourcc(*'XVID')
              out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
              
-        if not out.isOpened():
              # Last resort fallbacks
-             for codec in ['mp4v', 'X264', 'avc1']:
-                 fourcc = cv2.VideoWriter_fourcc(*codec)
-                 out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-                 if out.isOpened(): break
+             for codec in ['mp4v', 'XVID', 'X264', 'av1 ', 'DIVX']:
+                 try:
+                    fourcc = cv2.VideoWriter_fourcc(*codec)
+                    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+                    if out.isOpened(): 
+                        st.write(f"✅ Using Codec: {codec}")
+                        break
+                 except: continue
+             
+             if not out.isOpened():
+                # Ultimate fallback: MJPG via raw 0 (often works when string fails)
+                out = cv2.VideoWriter(output_path, 0, fps, (width, height))
+                if out.isOpened(): st.write("✅ Using RAW Codec (0)")
     except Exception as e:
-        print(f"Video Writer Error: {str(e)}")
-        # Create empty file to prevent crash
+        st.error(f"Video Writer Failed: {str(e)}")
         open(output_path, 'a').close()
         return output_path
 
@@ -610,16 +617,21 @@ def main():
                     with st.spinner('Optimizing video for playback...'):
                         output_path = reencode_video_for_browser(temp_output)
                         
-                    st.success("Done!")
-                    st.video(output_path)
-                    
-                    with open(output_path, "rb") as file:
-                        st.download_button(
-                            label="Download Analyzed Video",
-                            data=file,
-                            file_name=f"analyzed_{exercise_type.lower()}.mp4",
-                            mime="video/mp4"
-                        )
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                        st.success("Done!")
+                        st.video(output_path)
+                        
+                        with open(output_path, "rb") as file:
+                            st.download_button(
+                                label="Download Analyzed Video",
+                                data=file,
+                                file_name=f"analyzed_{exercise_type.lower()}.mp4",
+                                mime="video/mp4"
+                            )
+                    else:
+                        st.error("Generated video is empty. The server could not write the video file.")
+                        if os.path.exists(temp_output):
+                            st.info(f"Intermediate file size: {os.path.getsize(temp_output)} bytes")
                 except Exception as e:
                     st.error(f"Analysis failed: {str(e)}")
                     st.exception(e)
