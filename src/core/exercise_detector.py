@@ -271,9 +271,19 @@ class ExerciseDetector:
                 ankle_dists = [ abs(lm[27].x - lm[28].x) for lm in self.buffer ]
                 avg_ankle_dist = np.mean(ankle_dists)
                 
-                # Lunge indicators: (RELAXED THRESHOLDS)
-                is_lunge = (avg_knee_diff > 0.08 and avg_ankle_dist > 0.15) or \
-                           (knee_diff_rom > 0.06 and avg_ankle_dist > 0.15)
+                # Lunge High Sensitivity Check
+                # 1. Strong Knee Asymmetry (Vertical Diff): Squats are symmetrical. Lunges are not.
+                # If knees are vertically different by >15%, it's definitely a lunge (or weird squat).
+                # This catches lunges even if foot spread (x-axis) looks small (e.g. frontal view).
+                is_knee_asymmetric = avg_knee_diff > 0.15
+                
+                # 2. Standard Lunge Check (Stance + Moderate Asymmetry)
+                is_standard_lunge = (avg_knee_diff > 0.05 and avg_ankle_dist > 0.12)
+                
+                # 3. Dynamic Lunge Check (Changing Asymmetry + Width)
+                is_dynamic_lunge = (knee_diff_rom > 0.08 and avg_ankle_dist > 0.12)
+
+                is_lunge = is_knee_asymmetric or is_standard_lunge or is_dynamic_lunge
                 
                 if is_lunge:
                     current_guess = "Lunge"
