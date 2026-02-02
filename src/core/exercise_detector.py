@@ -403,8 +403,9 @@ class ExerciseDetector:
                             
                         # 3. SEATED BENCH PRESS
                         # Fallback if hands are high (Chest level)
-                        # STRICT GUARD: Hip Movement must be LOW (< 10%). If hips are moving up/down, it's likely a Squat.
-                        elif combined_elbow_rom > 0.06 and hip_rom_y < 0.10:
+                        # STRICT GUARD: Hip Movement must be LOW (< 12%). 
+                        # Hands must be typically ABOVE shoulders for Chest Press (Supine-like motion)
+                        elif combined_elbow_rom > 0.06 and hip_rom_y < 0.12 and not hands_are_low:
                               current_guess = "Seated Bench Press"
             
             # 3. DIPS
