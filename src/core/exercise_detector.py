@@ -298,9 +298,10 @@ class ExerciseDetector:
                 # Lunges usually have fixed arm width (holding weights)
                 # If arms are flapping (Fly) and hips are static (Seated), it's NOT a Lunge
                 # RELAXED THRESHOLDS: Allow more hip movement (0.12) and less arm spread (0.12)
-                if is_lunge and arm_spread_rom > 0.12 and hip_rom_y < 0.12:
-                     # Exception: If knee asymmetry is EXTREME (>0.25), might really be a lunge
-                     if avg_knee_diff < 0.25:
+                if is_lunge and arm_spread_rom > 0.12:
+                     # Strong Guard: If hips are stable (< 0.10) OR Arm Spread is dominant (> 0.15)
+                     # Reject Lunge even if knees are asymmetric (e.g. crossed legs)
+                     if hip_rom_y < 0.10 or arm_spread_rom > 0.15:
                         is_lunge = False
                 
                 if is_lunge:
@@ -357,13 +358,14 @@ class ExerciseDetector:
             # Seated exercises require VERTICAL torso AND low horizontal ratio
             if current_guess is None and is_vertical_torso and hands_in_chest_zone and horizontal_ratio < 0.4:
                 # Strict exclusions for Seated exercises
-                # SQUAT GUARD: If hips are moving significantly (> 0.08), it is NOT a seated exercise
+                # SQUAT GUARD: If hips are moving significantly (> 0.12), it is NOT a seated exercise
                 # Seated classification usually means hips are planted.
-                is_excluded_by_hip_movement = hip_rom_y > 0.08  # Stricter exclusion (was 0.10)
+                is_excluded_by_hip_movement = hip_rom_y > 0.12  # Relaxed from 0.08 for robustness
                 is_excluded_by_stance = ankle_dist_x > 0.18 # Wide/Split stance = Lunge/Squat
                 
                 # EXCEPTION: Allow wide stance if it's clearly a Chest Fly (Arm Spread Motion)
-                if arm_spread_rom > 0.15:
+                # Relaxed exception threshold to catch flys even with wide feet
+                if arm_spread_rom > 0.12:
                     is_excluded_by_stance = False
 
                 # Check for Knee Movement Check (Double Guard against dynamic squats)
@@ -392,8 +394,8 @@ class ExerciseDetector:
                     # Harmonized threshold with Lunge guard (0.12)
                     if arm_spread_rom > 0.12 and avg_elbow_rom < 55:
                         # Seated (Butterfly Machine) has almost ZERO hip vertical movement
-                        # Relaxed slightly to 0.08 to catch seated users who shift slightly
-                        if hip_rom_y < 0.08 and horizontal_ratio < 0.2:
+                        # Relaxed slightly to 0.12 to catch seated users who shift slightly
+                        if hip_rom_y < 0.12 and horizontal_ratio < 0.2:
                             current_guess = "Seated Chest Fly"
                         else:
                             current_guess = "Chest Fly"
