@@ -1,4 +1,5 @@
 import os
+print("🚀 App starting... Setting environment variables.")
 # CRITICAL: Set environment variables BEFORE any other imports to prevent crashes on Cloud
 os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
