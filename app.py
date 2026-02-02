@@ -40,6 +40,9 @@ def reencode_video_for_browser(input_path, output_path=None):
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
     
     try:
+        # Check if ffmpeg is available
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+
         # Use ffmpeg to re-encode with H.264 codec for maximum browser compatibility
         # Copy all metadata including rotation to preserve orientation
         cmd = [
@@ -60,10 +63,12 @@ def reencode_video_for_browser(input_path, output_path=None):
         if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return output_path
         else:
-            # Silently fall back to original if re-encoding fails
-            return input_path
+            return input_path # Fallback silently
+            
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        # FFmpeg not found or error
+        return input_path
     except Exception as e:
-        # Silently fall back to original on any error
         return input_path
 
 
@@ -354,6 +359,50 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     
+
+    
+    if use_hybrid and os.path.exists('yolov8n.pt'):
+        detector = HybridPoseEstimator(model_path='yolov8n.pt')
+    else:
+        detector = PoseDetector()
+        
+    # Smart Rotation Fix for Phone Videos
+    rotation_code = None
+    try:
+        # Check first 30 frames for a valid pose to determine rotation
+        for _ in range(30):
+            ret, frame = cap.read()
+            if not ret: break
+            
+            h, w, c = frame.shape
+            # Only check if video is Landscape (Possible raw phone video)
+            if w > h:
+                test_img, _ = detector.find_pose(frame, draw=False)
+                lm = detector.get_landmarks()
+                if lm:
+                    nose = lm[0]
+                    l_hip, r_hip = lm[23], lm[24]
+                    mid_hip_x = (l_hip.x + r_hip.x) / 2
+                    mid_hip_y = (l_hip.y + r_hip.y) / 2
+                    
+                    dx = abs(nose.x - mid_hip_x)
+                    dy = abs(nose.y - mid_hip_y)
+                    
+                    # If Nose X is far from Hip X (Sideways)
+                    # Relaxed threshold: if dx > dy (horizontal distance > vertical), it's sideways
+                    if dx > dy * 1.1: 
+                        if nose.x < mid_hip_x: rotation_code = cv2.ROTATE_90_CLOCKWISE
+                        else: rotation_code = cv2.ROTATE_90_COUNTERCLOCKWISE
+                        print(f"Smart Rotation Detected: {rotation_code}")
+                    break
+            
+        # Reset to start
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    except: pass
+    
+    if rotation_code is not None:
+        width, height = height, width
+
     # Use H264 codec for better browser compatibility
     try:
         fourcc = cv2.VideoWriter_fourcc(*'H264')
@@ -370,12 +419,7 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
             # Fallback to mp4v
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-    
-    if use_hybrid and os.path.exists('yolov8n.pt'):
-        detector = HybridPoseEstimator(model_path='yolov8n.pt')
-    else:
-        detector = PoseDetector()
-        
+
     exercise_detector = ExerciseDetector()
     analyzers = {
         "Squat": SquatAnalyzer, "Push-Up": PushUpAnalyzer, 
@@ -409,7 +453,10 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
-            
+        
+        if rotation_code is not None:
+            frame = cv2.rotate(frame, rotation_code)
+        
         frame, _ = detector.find_pose(frame, draw=True)
         landmarks = detector.get_landmarks()
         
