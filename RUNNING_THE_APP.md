@@ -25,10 +25,10 @@ run_app.bat
 
 **Option B:** Run with Python module syntax
 ```bash
-python -m streamlit run app.py
+python -m streamlit run streamlit_app.py
 ```
 
-**DO NOT USE:** `streamlit run app.py` (this uses Anaconda's streamlit which has missing packages)
+**DO NOT USE:** `streamlit run streamlit_app.py` (this uses Anaconda's streamlit which has missing packages)
 
 ## Benefits
 - ✅ App now starts without crashes
