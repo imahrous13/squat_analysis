@@ -11,8 +11,10 @@ import av
 
 # Suppress MediaPipe and TF logging/GPU issues
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['MP_GPU_MODE'] = '0' # Attempt to force CPU
+os.environ['MP_GPU_MODE'] = '0' # Force CPU
 os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1' # Hide GPU from TF/MediaPipe
+os.environ['QT_QPA_PLATFORM'] = 'offscreen' # Prevent GUI errors
 
 # Gym Analyzer v1.0.1
 # Internal imports
@@ -189,23 +191,18 @@ class BaseVideoProcessor(VideoProcessorBase):
         if self.recording_path:
             if self.out is None:
                 try:
-                    # Try H264 codec first (best browser compatibility)
-                    fourcc = cv2.VideoWriter_fourcc(*'H264')
+                    # Use MJPG as codec - more stable on headless servers
+                    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
                     self.out = cv2.VideoWriter(self.recording_path, fourcc, 20.0, (w, h))
                     if not self.out.isOpened():
-                        raise Exception("H264 failed")
-                except:
-                    try:
-                        # Fallback to X264
-                        fourcc = cv2.VideoWriter_fourcc(*'X264')
-                        self.out = cv2.VideoWriter(self.recording_path, fourcc, 20.0, (w, h))
-                        if not self.out.isOpened():
-                            raise Exception("X264 failed")
-                    except:
-                        # Last resort: mp4v
+                        # Fallback to mp4v
                         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                         self.out = cv2.VideoWriter(self.recording_path, fourcc, 20.0, (w, h))
-            self.out.write(img)
+                except Exception as e:
+                    print(f"Webcam Recorder Error: {e}")
+            
+            if self.out and self.out.isOpened():
+                self.out.write(img)
             
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -496,9 +493,9 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                 try:
                     analysis_data = analyzer.analyze(landmarks, width, height)
                 except Exception as e:
-                    # Fallback on analyzer error
                     print(f"Analyzer Error: {e}")
-                    analysis_data = {"feedback": "Processing error, skipping frame...", "state": "ERROR", "rep_count": 0, "correct_reps": 0, "incorrect_reps": 0, "target_muscles": "N/A"}
+                    analysis_data["feedback"] = "Processing error, skipping frame..."
+                    analysis_data["state"] = "ERROR"
             else:
                 buffer_size = len(exercise_detector.buffer)
                 required_size = int(exercise_detector.window_size * 0.7)
@@ -511,69 +508,54 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                 elif votes_size < required_votes:
                     feedback_msg += f" (Confidence {votes_size}/{required_votes})"
                 
-                analysis_data = {
-                    "state": "ANALYZING...", 
-                    "rep_count": 0, 
-                    "correct_reps": 0, 
-                    "incorrect_reps": 0, 
-                    "feedback": feedback_msg, 
-                    "advice": "", 
-                    "last_rep_score": 0, 
-                    "reasons": [], 
-                    "view": "N/A", 
-                    "target_muscles": "N/A", 
-                    "l_knee_angle": 0, 
-                    "r_knee_angle": 0
-                }
+                analysis_data["state"] = "ANALYZING..."
+                analysis_data["feedback"] = feedback_msg
 
-            if out and out.isOpened():
-                out.write(frame)
-            frame_count += 1
-            if total_frames > 0: progress_bar.progress(frame_count / total_frames)
+        # Always draw UI
+        if analysis_data.get('state') in ["BOTTOM", "LOCKOUT", "TOP_PLANK"]: 
+            state_color = (0, 255, 0)
+        
+        y_pos = 40
+        draw_text_with_background(frame, f"Exercise: {exercise_name}", (10, y_pos), text_color=(255, 255, 255))
+        
+        y_pos += 40
+        draw_text_with_background(frame, f"State: {analysis_data.get('state', 'UNKNOWN')}", (10, y_pos), text_color=state_color)
+        
+        y_pos += 40
+        draw_text_with_background(frame, f"Muscles: {analysis_data.get('target_muscles', 'N/A')}", (10, y_pos), font_scale=0.6, text_color=(255, 150, 0))
+        
+        y_pos += 40
+        c_reps = analysis_data.get('correct_reps', 0)
+        i_reps = analysis_data.get('incorrect_reps', 0)
+        display_rep_count = analysis_data.get('rep_count', 0)
+        
+        if exercise_name not in ["Plank", "Deadlift", "Lunge"] and analysis_data.get('state') != "ANALYZING...":
+            display_rep_count = c_reps + i_reps
 
-            state_color = (0, 255, 255)
-            if analysis_data.get('state') in ["BOTTOM", "LOCKOUT", "TOP_PLANK"]: state_color = (0, 255, 0)
-            
-            y_pos = 40
-            draw_text_with_background(frame, f"Exercise: {exercise_name}", (10, y_pos), text_color=(255, 255, 255))
-            
+        draw_text_with_background(frame, f"Reps: {display_rep_count}", (10, y_pos), font_scale=0.8, thickness=2)
+        
+        y_pos += 35
+        draw_text_with_background(frame, f"Correct: {c_reps}", (10, y_pos), font_scale=0.6, text_color=(0, 255, 0))
+        draw_text_with_background(frame, f"Incorrect: {i_reps}", (160, y_pos), font_scale=0.6, text_color=(0, 0, 255))
+        
+        y_pos += 40
+        feedback = analysis_data.get('feedback', '')
+        if feedback:
+            draw_text_with_background(frame, f"Feedback: {feedback}", (10, y_pos), text_color=(0, 100, 255))
+        
+        score = analysis_data.get('last_rep_score', 0)
+        if score > 0 and score < 70 and analysis_data.get('reasons'): 
             y_pos += 40
-            draw_text_with_background(frame, f"State: {analysis_data['state']}", (10, y_pos), text_color=state_color)
-            
-            y_pos += 40
-            draw_text_with_background(frame, f"Muscles: {analysis_data.get('target_muscles', 'N/A')}", (10, y_pos), font_scale=0.6, text_color=(255, 150, 0))
-            
-            y_pos += 40
-            c_reps = analysis_data.get('correct_reps', 0)
-            i_reps = analysis_data.get('incorrect_reps', 0)
-            
-            display_rep_count = analysis_data.get('rep_count', 0)
-            if exercise_name not in ["Plank", "Deadlift", "Lunge"] and analysis_data.get('state') != "ANALYZING...":
-                display_rep_count = c_reps + i_reps
-
-            draw_text_with_background(frame, f"Reps: {display_rep_count}", (10, y_pos), font_scale=0.8, thickness=2)
-            
-            y_pos += 35
-            
-            draw_text_with_background(frame, f"Correct: {c_reps}", (10, y_pos), font_scale=0.6, text_color=(0, 255, 0))
-            draw_text_with_background(frame, f"Incorrect: {i_reps}", (160, y_pos), font_scale=0.6, text_color=(0, 0, 255))
-            
-            y_pos += 40
-            feedback = analysis_data.get('feedback', '')
-            if feedback:
-                draw_text_with_background(frame, f"Feedback: {feedback}", (10, y_pos), text_color=(0, 100, 255))
-            
-            score = analysis_data.get('last_rep_score', 0)
-            if score > 0 and score < 70 and analysis_data.get('reasons'): 
-                y_pos += 40
-                for r in analysis_data['reasons'][:2]:
-                    draw_text_with_background(frame, f"Fault: {r}", (10, y_pos), text_color=(0, 0, 255), font_scale=0.5)
-                    y_pos += 25
+            for r in analysis_data['reasons'][:2]:
+                draw_text_with_background(frame, f"Fault: {r}", (10, y_pos), text_color=(0, 0, 255), font_scale=0.5)
+                y_pos += 25
 
         if out and out.isOpened():
             out.write(frame)
+        
         frame_count += 1
-        if total_frames > 0: progress_bar.progress(frame_count / total_frames)
+        if total_frames > 0: 
+            progress_bar.progress(min(1.0, frame_count / total_frames))
 
     cap.release()
     if out: out.release()
@@ -584,7 +566,7 @@ def main():
     st.title("🏋️ AI Fitness Analysis Coach")
     
     if "webcam_recording" not in st.session_state:
-        st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+        st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.avi').name
     
     # Setup Sidebar Options
     with st.sidebar:
@@ -682,7 +664,7 @@ def main():
                 if st.button("🗑️ Clear Recording"):
                     if os.path.exists(st.session_state.webcam_recording):
                         os.remove(st.session_state.webcam_recording)
-                    st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+                    st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.avi').name
                     st.rerun()
             elif os.path.exists(st.session_state.webcam_recording) and os.path.getsize(st.session_state.webcam_recording) > 0:
                 st.warning("Recording was too short or could not be processed.")
