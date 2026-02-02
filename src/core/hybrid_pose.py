@@ -62,9 +62,12 @@ class HybridPoseEstimator:
         from ultralytics import YOLO
         from mediapipe.solutions import pose as mp_pose
         from mediapipe.solutions import drawing_utils as mp_drawing
+        
         self.yolo = YOLO(model_path)
         self.roi_manager = RoiManager(padding_pct=0.25)
         self.mp_pose = mp_pose
+        self.mp_drawing = mp_drawing
+        
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
             model_complexity=1, # Use Balanced model for significantly better stability
@@ -72,7 +75,6 @@ class HybridPoseEstimator:
             min_detection_confidence=min_pose_conf,
             min_tracking_confidence=min_pose_conf
         )
-        self.mp_drawing = mp_drawing
         self.min_det_conf = min_detection_conf
         self.last_landmarks = None 
         
