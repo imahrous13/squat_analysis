@@ -61,7 +61,13 @@ class HybridPoseEstimator:
     Drop-in replacement for PoseDetector.
     """
     def __init__(self, model_path='yolov8n.pt', min_detection_conf=0.5, min_pose_conf=0.5):
-        self.yolo = YOLO(model_path)
+        try:
+            from ultralytics import YOLO
+            self.yolo = YOLO(model_path)
+        except ImportError:
+            # Fallback if ultralytics is not installed
+            self.yolo = None
+            
         self.roi_manager = RoiManager(padding_pct=0.25)
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(

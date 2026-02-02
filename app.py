@@ -1,12 +1,13 @@
 import os
 # CRITICAL: Set environment variables BEFORE any other imports to prevent GPU crashes
-os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python' # Fixes common Cloud segfaults
+os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['MP_GPU_MODE'] = '0' 
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
 os.environ['XDG_RUNTIME_DIR'] = '/tmp/runtime-streamlit'
+os.makedirs(os.environ['XDG_RUNTIME_DIR'], exist_ok=True)
 
 import streamlit as st
 import cv2
@@ -15,6 +16,7 @@ import time
 import subprocess
 import mediapipe as mp
 import numpy as np
+import gc
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
 
@@ -477,6 +479,9 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
         if rotation_code is not None:
             frame = cv2.rotate(frame, rotation_code)
         
+        # Memory safety copy for Cloud processing
+        proc_frame = frame.copy()
+        
         # Default data for frames with no landmarks
         analysis_data = {
             "state": "NO PERSON", "rep_count": 0, "correct_reps": 0, "incorrect_reps": 0,
@@ -485,7 +490,7 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
         }
         state_color = (0, 255, 255)
 
-        frame, _ = detector.find_pose(frame, draw=True)
+        frame, _ = detector.find_pose(proc_frame, draw=True)
         landmarks = detector.get_landmarks()
         
         if landmarks:
