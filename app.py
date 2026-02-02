@@ -18,21 +18,62 @@ import gc
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
 
-# Gym Analyzer v1.0.1
-# Internal imports
-from src.core.movenet_pose import MoveNetEstimator as PoseDetector
-from src.core.hybrid_pose import HybridPoseEstimator
-from src.core.exercise_detector import ExerciseDetector
-from src.analyzers.squat_analyzer import SquatAnalyzer
-from src.analyzers.pushup_analyzer import PushUpAnalyzer
-from src.analyzers.bench_press_analyzer import BenchPressAnalyzer
-from src.analyzers.deadlift_analyzer import DeadliftAnalyzer
-from src.analyzers.lunge_analyzer import LungeAnalyzer
-from src.analyzers.jumping_jacks_analyzer import JumpingJacksAnalyzer
-from src.analyzers.plank_analyzer import PlankAnalyzer
-from src.analyzers.chest_fly_analyzer import ChestFlyAnalyzer
-from src.analyzers.dips_analyzer import DipsAnalyzer
-from src.core.utils import draw_text_with_background, get_landmark_pixel
+# Lazy loading functions to prevent Cloud memory crashes
+def get_pose_detector(use_hybrid=False):
+    if use_hybrid:
+        from src.core.hybrid_pose import HybridPoseEstimator
+        return HybridPoseEstimator(model_path='yolov8n.pt')
+    else:
+        from src.core.movenet_pose import MoveNetEstimator
+        return MoveNetEstimator()
+
+def get_exercise_detector():
+    from src.core.exercise_detector import ExerciseDetector
+    return ExerciseDetector()
+
+def get_analyzer_class(exercise_type):
+    """Lazy load analyzer classes only when needed"""
+    if exercise_type == "Squat":
+        from src.analyzers.squat_analyzer import SquatAnalyzer
+        return SquatAnalyzer
+    elif exercise_type == "Push-Up":
+        from src.analyzers.pushup_analyzer import PushUpAnalyzer
+        return PushUpAnalyzer
+    elif exercise_type == "Bench Press":
+        from src.analyzers.bench_press_analyzer import BenchPressAnalyzer
+        return BenchPressAnalyzer
+    elif exercise_type == "Seated Bench Press":
+        from src.analyzers.bench_press_analyzer import BenchPressAnalyzer
+        return BenchPressAnalyzer
+    elif exercise_type == "Deadlift":
+        from src.analyzers.deadlift_analyzer import DeadliftAnalyzer
+        return DeadliftAnalyzer
+    elif exercise_type == "Lunge":
+        from src.analyzers.lunge_analyzer import LungeAnalyzer
+        return LungeAnalyzer
+    elif exercise_type == "Jumping Jacks":
+        from src.analyzers.jumping_jacks_analyzer import JumpingJacksAnalyzer
+        return JumpingJacksAnalyzer
+    elif exercise_type == "Plank":
+        from src.analyzers.plank_analyzer import PlankAnalyzer
+        return PlankAnalyzer
+    elif exercise_type == "Chest Fly":
+        from src.analyzers.chest_fly_analyzer import ChestFlyAnalyzer
+        return ChestFlyAnalyzer
+    elif exercise_type == "Seated Chest Fly":
+        from src.analyzers.chest_fly_analyzer import ChestFlyAnalyzer
+        return ChestFlyAnalyzer
+    elif exercise_type == "Dips":
+        from src.analyzers.dips_analyzer import DipsAnalyzer
+        return DipsAnalyzer
+    elif exercise_type == "Seated Dips":
+        from src.analyzers.dips_analyzer import DipsAnalyzer
+        return DipsAnalyzer
+    return None
+
+def get_utils():
+    from src.core.utils import draw_text_with_background, get_landmark_pixel
+    return draw_text_with_background, get_landmark_pixel
 
 # RTC Configuration for WebRTC
 RTC_CONFIGURATION = RTCConfiguration(
@@ -62,19 +103,11 @@ def reencode_video_for_browser(input_path, output_path=None):
 
 class BaseVideoProcessor(VideoProcessorBase):
     def __init__(self, analyzer_class, recording_path=None, use_hybrid=False, **analyzer_args):
-        if use_hybrid:
-            # Check if model exists, if not warn/fallback (though we downloaded it)
-            if os.path.exists('yolov8n.pt'):
-                self.detector = HybridPoseEstimator(model_path='yolov8n.pt')
-            else:
-                self.detector = PoseDetector()
-                print("Warning: yolov8n.pt not found, falling back to Standard Pose.")
-        else:
-            self.detector = PoseDetector()
+        self.detector = get_pose_detector(use_hybrid)
             
         self.analyzer = analyzer_class(**analyzer_args) if analyzer_class else None
         self.exercise_name = analyzer_class.__name__.replace('Analyzer', '') if analyzer_class else "Detecting..."
-        self.exercise_detector = ExerciseDetector()
+        self.exercise_detector = get_exercise_detector()
         self.p_time = 0
         self.recording_path = recording_path
         self.out = None
@@ -88,6 +121,7 @@ class BaseVideoProcessor(VideoProcessorBase):
         self.stop_recording()
 
     def recv(self, frame):
+        draw_text_with_background, get_landmark_pixel = get_utils()
         img = frame.to_ndarray(format="bgr24")
         h, w, c = img.shape
         
@@ -103,33 +137,25 @@ class BaseVideoProcessor(VideoProcessorBase):
                 detected = self.exercise_detector.detect()
                 if detected:
                     self.exercise_name = detected
-                    analyzers = {
-                        "Squat": SquatAnalyzer, "Push-Up": PushUpAnalyzer, 
-                        "Bench Press": BenchPressAnalyzer, "Seated Bench Press": BenchPressAnalyzer,
-                        "Deadlift": DeadliftAnalyzer,
-                        "Lunge": LungeAnalyzer, "Jumping Jacks": JumpingJacksAnalyzer,
-                        "Plank": PlankAnalyzer,
-                        "Chest Fly": ChestFlyAnalyzer, "Seated Chest Fly": ChestFlyAnalyzer,
-                        "Dips": DipsAnalyzer, "Seated Dips": DipsAnalyzer
-                    }
-
-                    if detected == "Seated Bench Press":
-                        self.analyzer = BenchPressAnalyzer(variant="seated")
-                    elif detected == "Seated Chest Fly":
-                        self.analyzer = ChestFlyAnalyzer(variant="seated")
-                    elif detected == "Seated Dips":
-                        self.analyzer = DipsAnalyzer(variant="seated")
-                    elif detected in analyzers:
-                         self.analyzer = analyzers[detected]()
+                    analyzer_class = get_analyzer_class(detected)
                     
-                    # Credit the rep used for detection (Auto-Detect "Free" Rep)
-                    if self.analyzer and detected not in ["Plank"]: 
-                        self.analyzer.rep_count = 1
-                        self.analyzer.correct_reps = 1
-                        self.analyzer.feedback = "Exercise Detected! Rep 1 counted."
+                    if detected in ["Seated Bench Press", "Seated Chest Fly", "Seated Dips"]:
+                        self.analyzer = analyzer_class(variant="seated")
+                    elif analyzer_class:
+                        self.analyzer = analyzer_class()
+                    
+                    if self.analyzer and detected == "Plank": 
+                        self.analyzer.is_active = True
+                        self.analyzer.feedback = "Exercise Detected! Hold your plank."
+                    elif self.analyzer:
+                        self.analyzer.feedback = "Exercise Detected! Start your reps."
             
             if self.analyzer:
-                analysis_data = self.analyzer.analyze(landmarks, w, h)
+                try:
+                    analysis_data = self.analyzer.analyze(landmarks, w, h)
+                except Exception as e:
+                    print(f"Analyzer Error: {e}")
+                    analysis_data = {"state": "ERROR", "feedback": f"Error: {str(e)}", "rep_count": 0}
             else:
                 # Show more detailed feedback during auto-detection
                 buffer_size = len(self.exercise_detector.buffer)
@@ -196,6 +222,7 @@ class BaseVideoProcessor(VideoProcessorBase):
         pass
 
     def _draw_common_overlay(self, img, analysis_data, w, h):
+        draw_text_with_background, _ = get_utils()
         state_color = (0, 255, 255)
         if analysis_data.get('state') in ["BOTTOM", "LOCKOUT", "TOP_PLANK"]: 
             state_color = (0, 255, 0)
@@ -270,8 +297,10 @@ class BaseVideoProcessor(VideoProcessorBase):
         return lines
 
 class SquatVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(SquatAnalyzer, recording_path, use_hybrid)
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Squat"), recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
+        _, get_landmark_pixel = get_utils()
         for side in [mp.solutions.pose.PoseLandmark.LEFT_KNEE, mp.solutions.pose.PoseLandmark.RIGHT_KNEE]:
             pos = get_landmark_pixel(landmarks[side.value], w, h)
             angle = analysis_data.get('l_knee_angle' if side == mp.solutions.pose.PoseLandmark.LEFT_KNEE else 'r_knee_angle', 0)
@@ -279,8 +308,10 @@ class SquatVideoProcessor(BaseVideoProcessor):
                 cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
 class PushUpVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(PushUpAnalyzer, recording_path, use_hybrid)
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Push-Up"), recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
+        _, get_landmark_pixel = get_utils()
         angle = analysis_data.get('elbow_angle', 0)
         if angle > 0:
             l_vis = landmarks[mp.solutions.pose.PoseLandmark.LEFT_ELBOW.value].visibility
@@ -290,11 +321,14 @@ class PushUpVideoProcessor(BaseVideoProcessor):
             cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
 class DeadliftVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(DeadliftAnalyzer, recording_path, use_hybrid)
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Deadlift"), recording_path, use_hybrid)
 
 class LungeVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(LungeAnalyzer, recording_path, use_hybrid)
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Lunge"), recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
+        _, get_landmark_pixel = get_utils()
         lead = analysis_data.get('lead_leg')
         if lead:
             target = mp.solutions.pose.PoseLandmark.LEFT_KNEE if lead == "LEFT" else mp.solutions.pose.PoseLandmark.RIGHT_KNEE
@@ -303,14 +337,18 @@ class LungeVideoProcessor(BaseVideoProcessor):
             cv2.putText(img, f"{int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
 class JumpingJacksVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(JumpingJacksAnalyzer, recording_path, use_hybrid)
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Jumping Jacks"), recording_path, use_hybrid)
 
 class PlankVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(PlankAnalyzer, recording_path, use_hybrid)
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Plank"), recording_path, use_hybrid)
 
 class BenchPressVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(BenchPressAnalyzer, recording_path, use_hybrid, variant="standard")
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Bench Press"), recording_path, use_hybrid, variant="standard")
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
+        _, get_landmark_pixel = get_utils()
         angle = analysis_data.get('elbow_angle', 0)
         if angle > 0:
             l_vis = landmarks[mp.solutions.pose.PoseLandmark.LEFT_ELBOW.value].visibility
@@ -321,20 +359,23 @@ class BenchPressVideoProcessor(BaseVideoProcessor):
 
 class SeatedBenchPressVideoProcessor(BenchPressVideoProcessor):
     def __init__(self, recording_path=None, use_hybrid=False): 
-        # Call Base init directly to pass variant="seated"
-        BaseVideoProcessor.__init__(self, BenchPressAnalyzer, recording_path, use_hybrid, variant="seated")
+        BaseVideoProcessor.__init__(self, get_analyzer_class("Seated Bench Press"), recording_path, use_hybrid, variant="seated")
 
 class ChestFlyVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(ChestFlyAnalyzer, recording_path, use_hybrid, variant="standing")
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Chest Fly"), recording_path, use_hybrid, variant="standing")
 
 class SeatedChestFlyVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(ChestFlyAnalyzer, recording_path, use_hybrid, variant="seated")
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Seated Chest Fly"), recording_path, use_hybrid, variant="seated")
 
 class DipsVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(DipsAnalyzer, recording_path, use_hybrid, variant="normal")
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Dips"), recording_path, use_hybrid, variant="normal")
 
 class SeatedDipsVideoProcessor(BaseVideoProcessor):
-    def __init__(self, recording_path=None, use_hybrid=False): super().__init__(DipsAnalyzer, recording_path, use_hybrid, variant="seated")
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(get_analyzer_class("Seated Dips"), recording_path, use_hybrid, variant="seated")
 
 class AutoDetectVideoProcessor(BaseVideoProcessor):
     def __init__(self, recording_path=None, use_hybrid=False): super().__init__(None, recording_path, use_hybrid)
@@ -342,17 +383,14 @@ class AutoDetectVideoProcessor(BaseVideoProcessor):
         pass
 
 def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
+    draw_text_with_background, get_landmark_pixel = get_utils()
+    
     cap = cv2.VideoCapture(input_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     
-
-    
-    if use_hybrid and os.path.exists('yolov8n.pt'):
-        detector = HybridPoseEstimator(model_path='yolov8n.pt')
-    else:
-        detector = PoseDetector()
+    detector = get_pose_detector(use_hybrid)
         
     # Smart Rotation Fix for Phone Videos
     rotation_code = None
@@ -417,30 +455,17 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
         open(output_path, 'a').close()
         return output_path
 
-    exercise_detector = ExerciseDetector()
-    analyzers = {
-        "Squat": SquatAnalyzer, "Push-Up": PushUpAnalyzer, 
-        "Bench Press": BenchPressAnalyzer, "Seated Bench Press": BenchPressAnalyzer,
-        "Deadlift": DeadliftAnalyzer, "Lunge": LungeAnalyzer, 
-        "Jumping Jacks": JumpingJacksAnalyzer, "Plank": PlankAnalyzer,
-        "Chest Fly": ChestFlyAnalyzer, "Seated Chest Fly": ChestFlyAnalyzer,
-        "Dips": DipsAnalyzer, "Seated Dips": DipsAnalyzer
-    }
+    exercise_detector = get_exercise_detector()
     
     if mode == "Auto-Detect":
         analyzer = None
         exercise_name = "Detecting..."
-    elif mode == "Seated Bench Press":
-         analyzer = BenchPressAnalyzer(variant="seated")
-         exercise_name = mode
-    elif mode == "Seated Chest Fly":
-         analyzer = ChestFlyAnalyzer(variant="seated")
-         exercise_name = mode
-    elif mode == "Seated Dips":
-         analyzer = DipsAnalyzer(variant="seated")
-         exercise_name = mode
     else:
-        analyzer = analyzers.get(mode, SquatAnalyzer)()
+        analyzer_class = get_analyzer_class(mode)
+        if mode in ["Seated Bench Press", "Seated Chest Fly", "Seated Dips"]:
+            analyzer = analyzer_class(variant="seated") if analyzer_class else None
+        else:
+            analyzer = analyzer_class() if analyzer_class else None
         exercise_name = mode
     
     progress_bar = st.progress(0)
@@ -463,14 +488,11 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                 detected = exercise_detector.detect()
                 if detected:
                     exercise_name = detected
-                    if detected == "Seated Bench Press":
-                        analyzer = BenchPressAnalyzer(variant="seated")
-                    elif detected == "Seated Chest Fly":
-                        analyzer = ChestFlyAnalyzer(variant="seated")
-                    elif detected == "Seated Dips":
-                        analyzer = DipsAnalyzer(variant="seated")
-                    elif detected in analyzers:
-                        analyzer = analyzers[detected]()
+                    analyzer_class = get_analyzer_class(detected)
+                    if detected in ["Seated Bench Press", "Seated Chest Fly", "Seated Dips"]:
+                        analyzer = analyzer_class(variant="seated") if analyzer_class else None
+                    else:
+                        analyzer = analyzer_class() if analyzer_class else None
                     
                     if analyzer and detected not in ["Plank"]: 
                         analyzer.rep_count = 1
