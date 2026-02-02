@@ -36,47 +36,49 @@ from src.core.utils import draw_text_with_background, get_landmark_pixel
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
-
 def reencode_video_for_browser(input_path, output_path=None):
     """Re-encode video using ffmpeg for browser compatibility."""
-    # If input doesn't exist, return it as-is
     if not os.path.exists(input_path):
-        return input_path
+        return input_path, "Input file not found."
     
     if output_path is None:
         output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-    
-    try:
-        # Check if ffmpeg is available
-        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
 
-        # Use ffmpeg to re-encode with H.264 codec for maximum browser compatibility
-        # Copy all metadata including rotation to preserve orientation
+    # Try to find ffmpeg
+    ffmpeg_cmd = "ffmpeg"
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True)
+    except:
+        if os.name == 'nt': # Windows
+             return input_path, "FFmpeg not found on your Windows machine. To enable video re-encoding, please install FFmpeg and add it to your PATH."
+        # On Linux/Cloud, we check local bin
+        if os.path.exists("ffmpeg"): ffmpeg_cmd = "./ffmpeg"
+        else:
+            return input_path, "FFmpeg is missing on the server. Skipping optimization."
+
+    try:
+        # High-compatibility command: H.264, YUV420p, no audio
         cmd = [
-            'ffmpeg', '-y', 
+            ffmpeg_cmd, '-y', 
             '-i', input_path,
-            '-c:v', 'libx264',  # H.264 video codec
-            '-preset', 'fast',   # Encoding speed
-            '-crf', '23',        # Quality (lower = better, 23 is default)
-            '-pix_fmt', 'yuv420p',  # Pixel format for compatibility
-            '-movflags', '+faststart',  # Enable streaming
-            '-map_metadata', '0',  # Copy all metadata from input
-            '-an', # Remove audio (OpenCV videos have no audio)
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'veryfast',
+            '-movflags', '+faststart',
+            '-an',
             output_path
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         
         if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return output_path, None
         else:
-            return input_path, f"Optimization failed (Code {result.returncode}): {result.stderr[:200]}"
+            err_msg = result.stderr[-200:] if result.stderr else "Unknown error"
+            return input_path, f"Optimization failed: {err_msg}. Note: libx264 might be missing if this is a custom server."
             
-    except (FileNotFoundError, subprocess.CalledProcessError) as e:
-        # FFmpeg not found or error
-        return input_path, f"FFmpeg not found or execution error: {str(e)}"
     except Exception as e:
-        return input_path, f"Unexpected error during video re-encoding: {str(e)}"
+        return input_path, f"Optimization server error: {str(e)}"
 
 
 class BaseVideoProcessor(VideoProcessorBase):
@@ -362,7 +364,7 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps <= 0 or fps > 60: fps = 20.0
     
-    st.write(f"🎞️ Video Details: {width}x{height} @ {fps} FPS")
+    st.info(f"⚙️ Processing: {width}x{height} @ {fps} FPS")
     
     if use_hybrid and os.path.exists('yolov8n.pt'):
         detector = HybridPoseEstimator(model_path='yolov8n.pt')
@@ -399,13 +401,12 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                         print(f"Smart Rotation Detected: {rotation_code}")
                     break
             
-        # Robust Reset: Close and re-open capture (cap.set is unreliable on some servers)
-        cap.release()
-        cap = cv2.VideoCapture(input_path)
+        # Reset capture properly
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     except Exception as e: 
-        print(f"Rotation logic error: {e}")
+        print(f"Rotation check error: {e}")
         cap.release()
-        cap = cv2.VideoCapture(input_path)
+        cap = cv2.VideoCapture(input_path) # Hard re-open only on failure
     
     if rotation_code is not None:
         width, height = height, width
@@ -431,17 +432,14 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                  try:
                     fourcc = cv2.VideoWriter_fourcc(*codec)
                     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-                    if out.isOpened(): 
-                        st.write(f"✅ Using Codec: {codec}")
-                        break
+                    if out.isOpened(): break
                  except: continue
              
              if not out.isOpened():
-                # Ultimate fallback: MJPG via raw 0 (often works when string fails)
+                # Ultimate fallback: MJPG via raw 0
                 out = cv2.VideoWriter(output_path, 0, fps, (width, height))
-                if out.isOpened(): st.write("✅ Using RAW Codec (0)")
     except Exception as e:
-        st.error(f"Video Writer Failed: {str(e)}")
+        print(f"Video Writer Failed: {str(e)}")
         open(output_path, 'a').close()
         return output_path
 
@@ -508,10 +506,12 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                     elif detected in analyzers:
                         analyzer = analyzers[detected]()
                     
-                    if analyzer and detected not in ["Plank"]: 
-                        analyzer.rep_count = 1
-                        analyzer.correct_reps = 1
-                        analyzer.feedback = "Exercise Detected! Rep 1 counted."
+                    if analyzer and detected == "Plank": 
+                        analyzer.is_active = True
+                        analyzer.feedback = "Exercise Detected! Hold your plank."
+                    elif analyzer:
+                        analyzer.feedback = "Exercise Detected! Start your reps."
+                        # DO NOT hardcode rep_count = 1 here to avoid double counting
             
             if analyzer:
                 try:
@@ -597,6 +597,17 @@ def main():
         st.header("Settings")
         use_hybrid = st.checkbox("Use AI-Enhanced Detection (YOLO + MediaPipe)", value=False, 
                                  help="Turning this on improves person detection but requires more hardware.")
+        show_debug = st.checkbox("Show Debug Diagnostics", value=False)
+    
+    if show_debug:
+        st.info("🔍 System Information:")
+        st.write(f"OS: {os.name}")
+        st.write(f"OpenCV: {cv2.__version__}")
+        st.write(f"MediaPipe: {mp.__version__}")
+        try:
+            import torch
+            st.write(f"Torch Device: {'GPU' if torch.cuda.is_available() else 'CPU'}")
+        except: st.write("Torch: Not found")
     
     exercise_type = st.radio("Select Exercise:", ["Auto-Detect", "Squat", "Lunge", "Push-Up", "Bench Press", "Seated Bench Press", "Deadlift", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips"], horizontal=True)
     tab1, tab2 = st.tabs(["📹 Upload Video", "🎥 Live Webcam"])
@@ -680,7 +691,8 @@ def main():
                 if not hasattr(st.session_state, 'webcam_recording_encoded') or \
                    st.session_state.webcam_recording_encoded != st.session_state.webcam_recording:
                     with st.spinner('Optimizing video for playback...'):
-                        encoded_path = reencode_video_for_browser(st.session_state.webcam_recording)
+                        encoded_path, err = reencode_video_for_browser(st.session_state.webcam_recording)
+                        if err: st.warning(f"⚠️ {err}")
                         st.session_state.webcam_recording_display = encoded_path
                         st.session_state.webcam_recording_encoded = st.session_state.webcam_recording
                 
@@ -704,4 +716,8 @@ def main():
                 st.warning("Recording was too short or could not be processed.")
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        st.error("🚀 A critical application error occurred.")
+        st.exception(e)
