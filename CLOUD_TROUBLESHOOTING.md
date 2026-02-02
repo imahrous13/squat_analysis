@@ -20,6 +20,12 @@
 **Symptoms:** Import errors for cv2, mediapipe
 **Solution:** Ensure `packages.txt` is in the root directory (✅ already there)
 
+#### Issue: OpenCV Package Conflict
+**Symptoms:** Crashes immediately on import of cv2
+**Solution:** `mediapipe` installs `opencv-contrib-python`, which conflicts with `opencv-python-headless`.
+- We switched `requirements.txt` to use `opencv-contrib-python`
+- `packages.txt` provides the necessary `libgl1` support for this to work on Cloud
+
 #### Issue: WebRTC Not Working on Cloud
 **Symptoms:** Webcam tab doesn't work
 **Solution:** WebRTC has limitations on Cloud. Consider:
