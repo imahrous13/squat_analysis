@@ -91,19 +91,8 @@ def get_utils():
 
 def get_mp_pose():
     """Lazy load MediaPipe pose module"""
-    try:
-        # Standard import
-        import mediapipe as mp
-        return mp.solutions.pose
-    except (ImportError, AttributeError):
-        try:
-            # Direct submodule import
-            from mediapipe.solutions import pose as mp_pose
-            return mp_pose
-        except (ImportError, AttributeError):
-            # Surgical internal import
-            import mediapipe.python.solutions.pose as mp_pose
-            return mp_pose
+    import mediapipe as mp
+    return mp.solutions.pose
 
 # RTC Configuration placeholder (set in main)
 RTC_CONFIGURATION = None

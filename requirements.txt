@@ -1,8 +1,8 @@
 streamlit
-# opencv-python-headless (Removed: MediaPipe installs its own compatible version)
-mediapipe
-protobuf>=3.20.0
+opencv-python-headless
+mediapipe==0.10.9
+protobuf==3.20.3
 numpy<2.0.0
 streamlit-webrtc
 av
-ultralytics
+# ultralytics (Disabled temporarily to ensure MediaPipe stability)
