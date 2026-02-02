@@ -217,14 +217,21 @@ class SquatAnalyzer:
         elif heel_lift_detected: feed_override = "Keep Heels Down!"
         
         if self.state == "STANDING":
-            knee_diff = abs(l_knee_angle - r_knee_angle)
+        if self.state == "STANDING":
+            # Only check symmetry in FRONT view. In SIDE view, one leg is hidden/different.
+            knee_diff = abs(l_knee_angle - r_knee_angle) if view == "FRONT" else 0
+            
             if current_knee_angle < self.descend_threshold:
-                if knee_diff > 40: # Significant asymmetry -> likely a lunge
+                # print(f"[DEBUG] Standing -> Descending? Angle: {current_knee_angle:.1f} < {self.descend_threshold}")
+                
+                # Check for Lunge (Only in Front View)
+                if view == "FRONT" and knee_diff > 40: 
                     self.feedback = "Lunge detected? Switch to Lunge mode."
                     self.state_counter = 0
                 else:
                     self.state_counter += 1
                     if self.state_counter > self.state_transition_threshold:
+                        # print("[DEBUG] TRANSITION: STANDING -> DESCENDING")
                         self.state = "DESCENDING"
                         self._reset_rep_stats()
                         self.rep_start_time = current_time
@@ -235,9 +242,11 @@ class SquatAnalyzer:
                  self.state_counter = 0
                 
         elif self.state == "DESCENDING":
+            print(f"[DEBUG] Descending. Angle: {current_knee_angle:.1f}. Target Deep: {self.deep_threshold}")
             if current_knee_angle < self.deep_threshold:
                 self.state_counter += 1
                 if self.state_counter > self.state_transition_threshold:
+                    print("[DEBUG] TRANSITION: DESCENDING -> BOTTOM")
                     self.state = "BOTTOM"
                     self.bottom_start_time = current_time
                     self.last_state_change_time = current_time
@@ -248,6 +257,7 @@ class SquatAnalyzer:
                 # Add debounce to abort logic too (prevents flickering)
                 self.state_counter += 1
                 if self.state_counter > self.state_transition_threshold:
+                    print("[DEBUG] TRANSITION: ABORTED -> STANDING")
                     self.state = "STANDING"
                     self.feedback = "Aborted: Go Deeper!"
                     self.last_state_change_time = current_time
@@ -256,15 +266,17 @@ class SquatAnalyzer:
                 self.state_counter = 0
                 
         elif self.state == "BOTTOM":
-            if current_knee_angle > self.deep_threshold + 5: # Reduced hysteresis from 10 to 5 for faster exit
+             print(f"[DEBUG] Bottom. Angle: {current_knee_angle:.1f}. Target Stand: {self.deep_threshold + 5}")
+             if current_knee_angle > self.deep_threshold + 5: # Reduced hysteresis from 10 to 5 for faster exit
                 self.state_counter += 1
                 if self.state_counter > self.state_transition_threshold:
+                    print("[DEBUG] TRANSITION: BOTTOM -> ASCENDING")
                     self.state = "ASCENDING"
                     self.bottom_duration = current_time - self.bottom_start_time
                     self.last_state_change_time = current_time
                     self.feedback = "Push up!"
                     self.state_counter = 0
-            else:
+             else:
                 self.state_counter = 0
                 
         elif self.state == "ASCENDING":
@@ -272,19 +284,24 @@ class SquatAnalyzer:
             time_in_state = current_time - self.last_state_change_time
             is_stuck_upright = (time_in_state > 4.0 and current_knee_angle > 145)
             
+            print(f"[DEBUG] Ascending. Angle: {current_knee_angle:.1f}. Target Stand: {self.stand_threshold}")
             if current_knee_angle > self.stand_threshold or is_stuck_upright:
                 self.state_counter += 1
                 if self.state_counter > self.state_transition_threshold or is_stuck_upright:
+                    print(f"[DEBUG] TRANSITION: ASCENDING -> STANDING. Counting Rep?")
                     self.state = "STANDING"
                     self.ascent_duration = current_time - (self.bottom_start_time + self.bottom_duration)
                     
                     # Minimum Duration Check (Prevent Fake Reps) - Relaxed
                     rep_total_time = self.descent_duration + self.bottom_duration + self.ascent_duration
+                    print(f"[DEBUG] Rep Time: {rep_total_time:.2f}s")
                     if rep_total_time > 0.5: # Valid rep must take at least 0.5s (was 1.0)
                         self.rep_count += 1
+                        print(f"[DEBUG] REP COUNTED! Total: {self.rep_count}")
                         self._score_rep(symmetry_diff)
                         self.feedback = "Good Rep!" if not is_stuck_upright else "Rep Completed (Timeout)"
                     else:
+                        print("[DEBUG] Rep too fast!")
                         self.feedback = f"Rep too fast ({rep_total_time:.1f}s)"
                         
                     self.state_counter = 0
@@ -293,12 +310,13 @@ class SquatAnalyzer:
             
             # Feature: Allow chaining reps even if lockout wasn't perfect (prevent getting stuck)
             elif current_knee_angle < self.descend_threshold:
+                 print("[DEBUG] TRANSITION: Incomplete extension -> DESCENDING")
                  self.state = "DESCENDING"
                  self.feedback = "Incomplete extension - Go again!"
                  self.rep_start_time = current_time # Reset timer for new rep
                  self._reset_rep_stats()
                  self.state_counter = 0
-                
+                 
         if feed_override and self.state in ["DESCENDING", "BOTTOM"]:
              self.feedback = feed_override
 
