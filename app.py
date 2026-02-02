@@ -67,19 +67,16 @@ def reencode_video_for_browser(input_path, output_path=None):
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
-        if result.returncode != 0:
-            print(f"FFmpeg Error: {result.stderr}")
-        
         if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-            return output_path
+            return output_path, None
         else:
-            return input_path # Fallback silently
+            return input_path, f"Optimization failed (Code {result.returncode}): {result.stderr[:200]}"
             
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
         # FFmpeg not found or error
-        return input_path
+        return input_path, f"FFmpeg not found or execution error: {str(e)}"
     except Exception as e:
-        return input_path
+        return input_path, f"Unexpected error during video re-encoding: {str(e)}"
 
 
 class BaseVideoProcessor(VideoProcessorBase):
@@ -420,10 +417,15 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
+        if out.isOpened():
+             st.write("✅ Using Codec: MJPG")
+             
         if not out.isOpened():
              fourcc = cv2.VideoWriter_fourcc(*'XVID')
              out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+             if out.isOpened(): st.write("✅ Using Codec: XVID")
              
+        if not out.isOpened():
              # Last resort fallbacks
              for codec in ['mp4v', 'XVID', 'X264', 'av1 ', 'DIVX']:
                  try:
@@ -615,7 +617,8 @@ def main():
                     
                     # Re-encode for browser compatibility
                     with st.spinner('Optimizing video for playback...'):
-                        output_path = reencode_video_for_browser(temp_output)
+                        output_path, err = reencode_video_for_browser(temp_output)
+                        if err: st.warning(f"⚠️ {err}")
                         
                     if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
                         st.success("Done!")
