@@ -1,7 +1,8 @@
-streamlit
+streamlit==1.31.1
+mediapipe==0.10.9
+protobuf==3.20.3
 opencv-python-headless
-mediapipe
 numpy<2.0.0
+ultralytics
 streamlit-webrtc
 av
-ultralytics
