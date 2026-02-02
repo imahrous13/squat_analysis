@@ -30,7 +30,7 @@
 
 For Streamlit Cloud, edit your app settings:
 - **Python version:** 3.11
-- **Main file path:** `streamlit_app.py`
+- **Main file path:** `app.py`
 - **Advanced settings:**
   - Keep default resource limits
   - The lazy loading should prevent memory issues
@@ -39,7 +39,7 @@ For Streamlit Cloud, edit your app settings:
 
 Before deploying to Cloud, always test locally:
 ```bash
-python -m streamlit run streamlit_app.py
+python -m streamlit run app.py
 ```
 
 ### 5. Disable Features for Cloud
