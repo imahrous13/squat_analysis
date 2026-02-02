@@ -17,12 +17,13 @@ import gc
 
 # Optional imports for webcam feature (may not work on Cloud)
 WEBRTC_AVAILABLE = False
+WEBRTC_ERROR = ""
 try:
     from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
     import av
     WEBRTC_AVAILABLE = True
 except ImportError as e:
-    st.warning(f"⚠️ Webcam feature disabled: {str(e)}. Video upload will still work!")
+    WEBRTC_ERROR = str(e)
     # Create dummy classes to prevent errors
     class VideoProcessorBase:
         pass
@@ -92,10 +93,8 @@ def get_mp_pose():
     import mediapipe as mp
     return mp.solutions.pose
 
-# RTC Configuration for WebRTC
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
+# RTC Configuration placeholder (set in main)
+RTC_CONFIGURATION = None
 
 def reencode_video_for_browser(input_path, output_path=None):
     """Re-encode using PyAV for maximum compatibility on both Windows (no FFmpeg) and Cloud."""
@@ -597,6 +596,15 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
 def main():
     st.set_page_config(page_title="AI Fitness Coach", layout="wide")
     st.title("🏋️ AI Fitness Analysis Coach")
+    
+    if not WEBRTC_AVAILABLE:
+        st.warning(f"⚠️ Webcam feature disabled: {WEBRTC_ERROR}. Video upload will still work!")
+    
+    # RTC Configuration for WebRTC - Initialize here
+    global RTC_CONFIGURATION
+    RTC_CONFIGURATION = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
     
     if "webcam_recording" not in st.session_state:
         st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
