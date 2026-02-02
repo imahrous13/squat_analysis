@@ -1,0 +1,18 @@
+[server]
+# Optimize for Cloud deployment
+maxUploadSize = 200
+enableXsrfProtection = false
+enableCORS = false
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+# Prevent memory issues
+magicEnabled = false
+fastReruns = false
+
+[client]
+# Optimize client-side performance
+showErrorDetails = true
+toolbarMode = "minimal"
