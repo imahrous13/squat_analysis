@@ -61,7 +61,7 @@ def reencode_video_for_browser(input_path, output_path=None):
             '-pix_fmt', 'yuv420p',  # Pixel format for compatibility
             '-movflags', '+faststart',  # Enable streaming
             '-map_metadata', '0',  # Copy all metadata from input
-            '-c:a', 'copy',  # Copy audio without re-encoding
+            '-an', # Remove audio (OpenCV videos have no audio)
             output_path
         ]
         
@@ -416,18 +416,17 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     # Robust VideoWriter Selection
     out = None
     try:
-        # Try mp4v first as it's the most standard for .mp4 containers in OpenCV
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        # For .avi intermediate, MJPG or XVID are the best choices
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
         if not out.isOpened():
-             # Fallback to MJPG if mp4v fails
-             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+             fourcc = cv2.VideoWriter_fourcc(*'XVID')
              out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
              
         if not out.isOpened():
              # Last resort fallbacks
-             for codec in ['XVID', 'X264', 'avc1']:
+             for codec in ['mp4v', 'X264', 'avc1']:
                  fourcc = cv2.VideoWriter_fourcc(*codec)
                  out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
                  if out.isOpened(): break
@@ -603,7 +602,7 @@ def main():
             
             if st.button(f'Analyze {exercise_type}'):
                 try:
-                    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name # mp4 is safer for browser fallback
+                    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.avi').name 
                     with st.spinner('Analyzing video...'):
                         process_video(tfile.name, temp_output, mode=exercise_type, use_hybrid=use_hybrid)
                     
