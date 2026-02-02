@@ -101,15 +101,17 @@ def reencode_video_for_browser(input_path, output_path=None):
 
 class BaseVideoProcessor(VideoProcessorBase):
     def __init__(self, mode, recording_path=None, use_hybrid=False):
-        from src.core.exercise_detector import ExerciseDetector
         self.detector = get_detector(use_hybrid)
         self.analyzer = get_analyzer(mode)
         self.exercise_name = mode
+        
+        from src.core.exercise_detector import ExerciseDetector
         self.exercise_detector = ExerciseDetector() if mode == "Auto-Detect" else None
         self.recording_path = recording_path
         self.out = None
 
     def recv(self, frame):
+        import av
         from src.core.utils import draw_text_with_background
         img = frame.to_ndarray(format="bgr24")
         h, w = img.shape[:2]
@@ -210,7 +212,7 @@ def main():
         use_hybrid = st.checkbox("AI-Enhanced Detection", value=False)
         if st.button("Clear Cache"): st.cache_data.clear(); gc.collect()
 
-    exercise_type = st.radio("Exercise:", ["Auto-Detect", "Squat", "Lunge", "Push-Up", "Deadlift", "Plank", "Bench Press", "Dips"], horizontal=True)
+    exercise_type = st.radio("Exercise:", ["Auto-Detect", "Squat", "Lunge", "Push-Up", "Deadlift", "Plank", "Bench Press", "Seated Bench Press", "Jumping Jacks", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips"], horizontal=True)
     tab1, tab2 = st.tabs(["📹 Upload", "🎥 Live"])
     
     with tab1:
@@ -226,6 +228,9 @@ def main():
                     final, err = reencode_video_for_browser(t_out)
                     if err: st.error(err)
                 st.video(final)
+                
+                with open(final, "rb") as f:
+                    st.download_button("Download Analysis", f, file_name="analysis.mp4")
 
     with tab2:
         if webrtc_streamer:
