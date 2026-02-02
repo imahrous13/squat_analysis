@@ -403,8 +403,9 @@ class ExerciseDetector:
                             
                         # 3. SEATED BENCH PRESS
                         # Fallback if hands are high (Chest level)
-                        elif combined_elbow_rom > 0.06:
-                             current_guess = "Seated Bench Press"
+                        # STRICT GUARD: Hip Movement must be LOW (< 10%). If hips are moving up/down, it's likely a Squat.
+                        elif combined_elbow_rom > 0.06 and hip_rom_y < 0.10:
+                              current_guess = "Seated Bench Press"
             
             # 3. DIPS
             if current_guess is None and is_vertical_torso and shoulder_rom_y > 0.08 and hands_below_hips_ratio > 0.6:
@@ -423,24 +424,7 @@ class ExerciseDetector:
                 # Use 70% confidence for faster initial lock
                 confidence_ratio = count / len(self.confidence_votes)
                 if confidence_ratio > 0.70:
+                    # Removed complex inflection check for initial detection to speed up start
                     return most_common
-                    
-            return None
-
-        # 4. Voting & Confidence - Ultra responsive
-        if current_guess:
-            self.confidence_votes.append(current_guess)
-            self.last_guess = current_guess
-            
-        # Allow detection with much smaller vote pool for faster response
-        if len(self.confidence_votes) >= int(self.confidence_votes.maxlen * 0.6):  # 60% of voting window (18 votes)
-            counts = Counter(self.confidence_votes)
-            most_common, count = counts.most_common(1)[0]
-            
-            # Use 70% confidence for faster initial lock
-            confidence_ratio = count / len(self.confidence_votes)
-            if confidence_ratio > 0.70:
-                # Removed complex inflection check for initial detection to speed up start
-                return most_common
                 
         return None
