@@ -409,23 +409,18 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
         width, height = height, width
 
     # Robust VideoWriter Selection
+    # Using MJPG as intermediate - extremely reliable on Linux/Headless servers
     out = None
     try:
-        # Try H.264 (AVC) - most browser compatible
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v') # SAFEST START for writing
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         if not out.isOpened():
-            # Try MJPEG as ultra-fallback if needed, but mp4v usually works
-            fourcc = cv2.VideoWriter_fourcc(*'avc1')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-            
-        if not out.isOpened():
-             # Last resort
-             fourcc = cv2.VideoWriter_fourcc(*'H264')
+             # Fallback to mp4v if MJPG fails
+             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
              out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     except Exception as e:
         st.error(f"Video Writer Error: {str(e)}")
-        # If all fail, create an empty file to avoid downstream crashes
+        # Create empty file to prevent crash
         open(output_path, 'a').close()
         return output_path
 
@@ -609,7 +604,7 @@ def main():
             st.video(tfile.name)
             
             if st.button(f'Analyze {exercise_type}'):
-                temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+                temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.avi').name
                 with st.spinner('Analyzing video...'):
                     process_video(tfile.name, temp_output, mode=exercise_type, use_hybrid=use_hybrid)
                 
