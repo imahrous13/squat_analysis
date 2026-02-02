@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import mediapipe as mp
 
 class RoiManager:
     def __init__(self, padding_pct=0.2, smooth_factor=0.3):
@@ -60,6 +59,8 @@ class HybridPoseEstimator:
     Drop-in replacement for PoseDetector.
     """
     def __init__(self, model_path='yolov8n.pt', min_detection_conf=0.5, min_pose_conf=0.5):
+        from ultralytics import YOLO
+        import mediapipe as mp
         self.yolo = YOLO(model_path)
         self.roi_manager = RoiManager(padding_pct=0.25)
         self.mp_pose = mp.solutions.pose
@@ -70,6 +71,7 @@ class HybridPoseEstimator:
             min_detection_confidence=min_pose_conf,
             min_tracking_confidence=min_pose_conf
         )
+        self.mp_drawing = mp.solutions.drawing_utils
         self.min_det_conf = min_detection_conf
         self.last_landmarks = None 
         
@@ -204,7 +206,7 @@ class HybridPoseEstimator:
                 mp_results_obj = ResultsWrapper(full_frame_landmarks)
                 
                 if draw:
-                    mp.solutions.drawing_utils.draw_landmarks(
+                    self.mp_drawing.draw_landmarks(
                         frame, mp_results_obj.pose_landmarks, self.mp_pose.POSE_CONNECTIONS
                     )
                     rx1, ry1, rx2, ry2 = roi_coords
@@ -219,7 +221,7 @@ class HybridPoseEstimator:
                 self.last_landmarks = mp_results.pose_landmarks.landmark
                 mp_results_obj = mp_results
                 if draw:
-                    mp.solutions.drawing_utils.draw_landmarks(
+                    self.mp_drawing.draw_landmarks(
                         frame, mp_results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS
                     )
         

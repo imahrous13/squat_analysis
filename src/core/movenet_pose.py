@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import mediapipe as mp
 import os
 
 class MoveNetLandmark:
@@ -13,6 +12,7 @@ class MoveNetLandmark:
 class MoveNetEstimator:
     def __init__(self, model_path=None):
         # Optimized MediaPipe configuration for Cloud stability
+        import mediapipe as mp
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
@@ -23,6 +23,7 @@ class MoveNetEstimator:
             min_tracking_confidence=0.5
         )
         self.last_landmarks = None
+        self.mp_drawing = mp.solutions.drawing_utils
         
     def find_pose(self, frame, draw=True, enhance_side_view=True):
         h, w, _ = frame.shape
@@ -37,7 +38,7 @@ class MoveNetEstimator:
                 self._enhance_side_view_landmarks()
             
             if draw:
-                mp.solutions.drawing_utils.draw_landmarks(
+                self.mp_drawing.draw_landmarks(
                     frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS
                 )
             return frame, results

@@ -14,8 +14,21 @@ import time
 import subprocess
 import numpy as np
 import gc
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
-import av
+
+# Optional imports for webcam feature (may not work on Cloud)
+WEBRTC_AVAILABLE = False
+try:
+    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+    import av
+    WEBRTC_AVAILABLE = True
+except ImportError as e:
+    st.warning(f"⚠️ Webcam feature disabled: {str(e)}. Video upload will still work!")
+    # Create dummy classes to prevent errors
+    class VideoProcessorBase:
+        pass
+    class RTCConfiguration:
+        def __init__(self, *args, **kwargs):
+            pass
 
 # Lazy loading functions to prevent Cloud memory crashes
 def get_pose_detector(use_hybrid=False):
@@ -595,7 +608,13 @@ def main():
                                  help="Turning this on improves person detection but requires more hardware.")
     
     exercise_type = st.radio("Select Exercise:", ["Auto-Detect", "Squat", "Lunge", "Push-Up", "Bench Press", "Seated Bench Press", "Deadlift", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips"], horizontal=True)
-    tab1, tab2 = st.tabs(["📹 Upload Video", "🎥 Live Webcam"])
+    
+    # Conditionally create tabs based on WebRTC availability
+    if WEBRTC_AVAILABLE:
+        tab1, tab2 = st.tabs(["📹 Upload Video", "🎥 Live Webcam"])
+    else:
+        tab1 = st.container()
+        st.info("ℹ️ Webcam feature is not available on this platform. Please use video upload.")
     
     with tab1:
         uploaded_file = st.file_uploader("Upload a video...", type=["mp4", "mov", "avi"])
@@ -626,70 +645,72 @@ def main():
                         mime="video/mp4"
                     )
     
-    with tab2:
-        processors = {
-            "Auto-Detect": AutoDetectVideoProcessor,
-            "Squat": SquatVideoProcessor,
-            "Lunge": LungeVideoProcessor,
-            "Push-Up": PushUpVideoProcessor,
-            "Bench Press": BenchPressVideoProcessor,
-            "Seated Bench Press": SeatedBenchPressVideoProcessor,
-            "Deadlift": DeadliftVideoProcessor,
-            "Jumping Jacks": JumpingJacksVideoProcessor,
-            "Plank": PlankVideoProcessor,
-            "Chest Fly": ChestFlyVideoProcessor,
-            "Seated Chest Fly": SeatedChestFlyVideoProcessor,
-            "Dips": DipsVideoProcessor,
-            "Seated Dips": SeatedDipsVideoProcessor
-        }
-        
-        recording_path = st.session_state.webcam_recording
-        
-        ctx = webrtc_streamer(
-            key=f"{exercise_type.lower()}-analysis",
-            video_processor_factory=lambda: processors[exercise_type](recording_path, use_hybrid=use_hybrid),
-            rtc_configuration=RTC_CONFIGURATION,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-        )
-        
-        if ctx.video_processor:
-            st.info("Recording session... The video will be available after you stop the webcam.")
-        
-        if not ctx.state.playing and ctx.video_processor:
-            ctx.video_processor.stop_recording()
+    # Webcam tab - only if WebRTC is available
+    if WEBRTC_AVAILABLE:
+        with tab2:
+            processors = {
+                "Auto-Detect": AutoDetectVideoProcessor,
+                "Squat": SquatVideoProcessor,
+                "Lunge": LungeVideoProcessor,
+                "Push-Up": PushUpVideoProcessor,
+                "Bench Press": BenchPressVideoProcessor,
+                "Seated Bench Press": SeatedBenchPressVideoProcessor,
+                "Deadlift": DeadliftVideoProcessor,
+                "Jumping Jacks": JumpingJacksVideoProcessor,
+                "Plank": PlankVideoProcessor,
+                "Chest Fly": ChestFlyVideoProcessor,
+                "Seated Chest Fly": SeatedChestFlyVideoProcessor,
+                "Dips": DipsVideoProcessor,
+                "Seated Dips": SeatedDipsVideoProcessor
+            }
             
-        if not ctx.state.playing and os.path.exists(st.session_state.webcam_recording):
-            if os.path.getsize(st.session_state.webcam_recording) > 1000:
-                st.subheader("📊 Last Session Results")
+            recording_path = st.session_state.webcam_recording
+            
+            ctx = webrtc_streamer(
+                key=f"{exercise_type.lower()}-analysis",
+                video_processor_factory=lambda: processors[exercise_type](recording_path, use_hybrid=use_hybrid),
+                rtc_configuration=RTC_CONFIGURATION,
+                media_stream_constraints={"video": True, "audio": False},
+                async_processing=True,
+            )
+            
+            if ctx.video_processor:
+                st.info("Recording session... The video will be available after you stop the webcam.")
+            
+            if not ctx.state.playing and ctx.video_processor:
+                ctx.video_processor.stop_recording()
                 
-                # Re-encode for browser compatibility if not already done
-                if not hasattr(st.session_state, 'webcam_recording_encoded') or \
-                   st.session_state.webcam_recording_encoded != st.session_state.webcam_recording:
-                    with st.spinner('Optimizing video for playback...'):
-                        encoded_path, err = reencode_video_for_browser(st.session_state.webcam_recording)
-                        if err: st.warning(f"Optimization warning: {err}")
-                        st.session_state.webcam_recording_display = encoded_path
-                        st.session_state.webcam_recording_encoded = st.session_state.webcam_recording
-                
-                display_video = st.session_state.get('webcam_recording_display', st.session_state.webcam_recording)
-                st.video(display_video)
-                
-                with open(display_video, "rb") as file:
-                    st.download_button(
-                        label="📥 Download Webcam Session",
-                        data=file,
-                        file_name=f"webcam_{exercise_type.lower()}.mp4",
-                        mime="video/mp4"
-                    )
-                
-                if st.button("🗑️ Clear Recording"):
-                    if os.path.exists(st.session_state.webcam_recording):
-                        os.remove(st.session_state.webcam_recording)
-                    st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.avi').name
-                    st.rerun()
-            elif os.path.exists(st.session_state.webcam_recording) and os.path.getsize(st.session_state.webcam_recording) > 0:
-                st.warning("Recording was too short or could not be processed.")
+            if not ctx.state.playing and os.path.exists(st.session_state.webcam_recording):
+                if os.path.getsize(st.session_state.webcam_recording) > 1000:
+                    st.subheader("📊 Last Session Results")
+                    
+                    # Re-encode for browser compatibility if not already done
+                    if not hasattr(st.session_state, 'webcam_recording_encoded') or \
+                       st.session_state.webcam_recording_encoded != st.session_state.webcam_recording:
+                        with st.spinner('Optimizing video for playback...'):
+                            encoded_path, err = reencode_video_for_browser(st.session_state.webcam_recording)
+                            if err: st.warning(f"Optimization warning: {err}")
+                            st.session_state.webcam_recording_display = encoded_path
+                            st.session_state.webcam_recording_encoded = st.session_state.webcam_recording
+                    
+                    display_video = st.session_state.get('webcam_recording_display', st.session_state.webcam_recording)
+                    st.video(display_video)
+                    
+                    with open(display_video, "rb") as file:
+                        st.download_button(
+                            label="📥 Download Webcam Session",
+                            data=file,
+                            file_name=f"webcam_{exercise_type.lower()}.mp4",
+                            mime="video/mp4"
+                        )
+                    
+                    if st.button("🗑️ Clear Recording"):
+                        if os.path.exists(st.session_state.webcam_recording):
+                            os.remove(st.session_state.webcam_recording)
+                        st.session_state.webcam_recording = tempfile.NamedTemporaryFile(delete=False, suffix='.avi').name
+                        st.rerun()
+                elif os.path.exists(st.session_state.webcam_recording) and os.path.getsize(st.session_state.webcam_recording) > 0:
+                    st.warning("Recording was too short or could not be processed.")
 
 if __name__ == '__main__':
     main()
