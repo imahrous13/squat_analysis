@@ -1,20 +1,20 @@
+import os
+# CRITICAL: Set environment variables BEFORE any other imports to prevent GPU crashes
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['MP_GPU_MODE'] = '0' 
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
+
 import streamlit as st
 import cv2
 import tempfile
-import os
 import time
 import subprocess
 import mediapipe as mp
 import numpy as np
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
-
-# Suppress MediaPipe and TF logging/GPU issues
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['MP_GPU_MODE'] = '0' # Force CPU
-os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1' # Hide GPU from TF/MediaPipe
-os.environ['QT_QPA_PLATFORM'] = 'offscreen' # Prevent GUI errors
 
 # Gym Analyzer v1.0.1
 # Internal imports
@@ -398,9 +398,13 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                         print(f"Smart Rotation Detected: {rotation_code}")
                     break
             
-        # Reset to start
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    except: pass
+        # Robust Reset: Close and re-open capture (cap.set is unreliable on some servers)
+        cap.release()
+        cap = cv2.VideoCapture(input_path)
+    except Exception as e: 
+        print(f"Rotation logic error: {e}")
+        cap.release()
+        cap = cv2.VideoCapture(input_path)
     
     if rotation_code is not None:
         width, height = height, width
@@ -412,7 +416,12 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         if not out.isOpened():
-             # Fallback to mp4v if MJPG fails
+             # Fallback to XVID if MJPG fails
+             fourcc = cv2.VideoWriter_fourcc(*'XVID')
+             out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        
+        if not out.isOpened():
+             # Last resort
              fourcc = cv2.VideoWriter_fourcc(*'mp4v')
              out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     except Exception as e:
@@ -586,24 +595,28 @@ def main():
             st.video(tfile.name)
             
             if st.button(f'Analyze {exercise_type}'):
-                temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.avi').name
-                with st.spinner('Analyzing video...'):
-                    process_video(tfile.name, temp_output, mode=exercise_type, use_hybrid=use_hybrid)
-                
-                # Re-encode for browser compatibility
-                with st.spinner('Optimizing video for playback...'):
-                    output_path = reencode_video_for_browser(temp_output)
+                try:
+                    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.avi').name
+                    with st.spinner('Analyzing video...'):
+                        process_video(tfile.name, temp_output, mode=exercise_type, use_hybrid=use_hybrid)
                     
-                st.success("Done!")
-                st.video(output_path)
-                
-                with open(output_path, "rb") as file:
-                    st.download_button(
-                        label="Download Analyzed Video",
-                        data=file,
-                        file_name=f"analyzed_{exercise_type.lower()}.mp4",
-                        mime="video/mp4"
-                    )
+                    # Re-encode for browser compatibility
+                    with st.spinner('Optimizing video for playback...'):
+                        output_path = reencode_video_for_browser(temp_output)
+                        
+                    st.success("Done!")
+                    st.video(output_path)
+                    
+                    with open(output_path, "rb") as file:
+                        st.download_button(
+                            label="Download Analyzed Video",
+                            data=file,
+                            file_name=f"analyzed_{exercise_type.lower()}.mp4",
+                            mime="video/mp4"
+                        )
+                except Exception as e:
+                    st.error(f"Analysis failed: {str(e)}")
+                    st.exception(e)
     
     with tab2:
         processors = {
