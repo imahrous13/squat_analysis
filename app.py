@@ -67,6 +67,9 @@ def reencode_video_for_browser(input_path, output_path=None):
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
+        if result.returncode != 0:
+            print(f"FFmpeg Error: {result.stderr}")
+        
         if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return output_path
         else:
@@ -359,7 +362,8 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     cap = cv2.VideoCapture(input_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0 or fps > 60: fps = 20.0 # Default fallback
     
 
     
@@ -410,22 +414,25 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
         width, height = height, width
 
     # Robust VideoWriter Selection
-    # Using MJPG as intermediate - extremely reliable on Linux/Headless servers
     out = None
     try:
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        # Try mp4v first as it's the most standard for .mp4 containers in OpenCV
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-        if not out.isOpened():
-             # Fallback to XVID if MJPG fails
-             fourcc = cv2.VideoWriter_fourcc(*'XVID')
-             out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
         if not out.isOpened():
-             # Last resort
-             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+             # Fallback to MJPG if mp4v fails
+             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
              out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+             
+        if not out.isOpened():
+             # Last resort fallbacks
+             for codec in ['XVID', 'X264', 'avc1']:
+                 fourcc = cv2.VideoWriter_fourcc(*codec)
+                 out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+                 if out.isOpened(): break
     except Exception as e:
-        st.error(f"Video Writer Error: {str(e)}")
+        print(f"Video Writer Error: {str(e)}")
         # Create empty file to prevent crash
         open(output_path, 'a').close()
         return output_path
@@ -596,7 +603,7 @@ def main():
             
             if st.button(f'Analyze {exercise_type}'):
                 try:
-                    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.avi').name
+                    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name # mp4 is safer for browser fallback
                     with st.spinner('Analyzing video...'):
                         process_video(tfile.name, temp_output, mode=exercise_type, use_hybrid=use_hybrid)
                     
