@@ -126,7 +126,9 @@ class SquatAnalyzer:
             
             # Check for Bottom
             # Either angle is low enough OR hips are near knee level
-            hips_at_knee_level = current_hip_y > (current_knee_y - 100) # Tolerance
+            # Tolerance adjusted for resolution (approx 20% of frame height)
+            tolerance = frame_height * 0.2
+            hips_at_knee_level = current_hip_y > (current_knee_y - tolerance)
             
             if avg_knee_angle < self.bottom_angle or hips_at_knee_level:
                 self.state_counter += 1
