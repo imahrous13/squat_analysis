@@ -1,8 +1,7 @@
 streamlit
 opencv-contrib-python
-mediapipe==0.10.9
-protobuf==3.20.3
+mediapipe>=0.10.13
+protobuf
 numpy<2.0.0
 streamlit-webrtc
 av
-# ultralytics (Disabled temporarily to ensure MediaPipe stability)
