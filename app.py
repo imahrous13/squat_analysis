@@ -106,8 +106,13 @@ def reencode_video_for_browser(input_path, output_path=None):
         input_container = av.open(input_path)
         output_container = av.open(output_path, mode='w', format='mp4')
         in_stream = input_container.streams.video[0]
+        
+        # The processed video already has correct physical dimensions.
+        # We do NOT want to swap them based on metadata again.
         out_stream = output_container.add_stream('libx264', rate=in_stream.base_rate)
-        out_stream.width, out_stream.height = in_stream.width, in_stream.height
+        out_stream.width = in_stream.width
+        out_stream.height = in_stream.height
+        
         out_stream.pix_fmt = 'yuv420p'
         out_stream.options = {'preset': 'veryfast', 'crf': '23'}
         for frame in input_container.decode(video=0):
@@ -413,41 +418,50 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     
     detector = get_pose_detector(use_hybrid)
         
-    # Smart Rotation Fix for Phone Videos
+    # --- NEW VISION-BASED ROTATION LOGIC ---
     rotation_code = None
-    try:
-        # Check first 30 frames for a valid pose to determine rotation
-        for _ in range(30):
-            ret, frame = cap.read()
-            if not ret: break
-            
-            h, w, c = frame.shape
-            # Only check if video is Landscape (Possible raw phone video)
-            if w > h:
-                test_img, _ = detector.find_pose(frame, draw=False)
-                lm = detector.get_landmarks()
-                if lm:
-                    nose = lm[0]
-                    l_hip, r_hip = lm[23], lm[24]
-                    mid_hip_x = (l_hip.x + r_hip.x) / 2
-                    mid_hip_y = (l_hip.y + r_hip.y) / 2
-                    
-                    dx = abs(nose.x - mid_hip_x)
-                    dy = abs(nose.y - mid_hip_y)
-                    
-                    # If Nose X is far from Hip X (Sideways)
-                    # Relaxed threshold: if dx > dy (horizontal distance > vertical), it's sideways
-                    if dx > dy * 1.1: 
-                        if nose.x < mid_hip_x: rotation_code = cv2.ROTATE_90_CLOCKWISE
-                        else: rotation_code = cv2.ROTATE_90_COUNTERCLOCKWISE
-                        print(f"Smart Rotation Detected: {rotation_code}")
-                    break
-            
-        # Reset to start
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    except: pass
     
-    if rotation_code is not None:
+    # 1. Portrait Guard: If video is already Tall, do NOT touch it.
+    if height > width:
+        print(f"Video is already Portrait ({width}x{height}). No rotation needed.")
+    else:
+        # 2. Gravity Scan: Only scan if it's currently wide (Landscape)
+        # Avoid rotating during Auto-Detect or for horizontal moves
+        horizontal_moves = ["Auto-Detect", "Push-Up", "Plank", "Bench Press", "Chest Fly", "Seated Chest Fly"]
+        
+        if mode not in horizontal_moves:
+            try:
+                print(f"Scanning wide video ({width}x{height}) for orientation...")
+                scan_cap = cv2.VideoCapture(input_path)
+                for _ in range(30): # Scan ~1 second
+                    ret, frame = scan_cap.read()
+                    if not ret: break
+                    
+                    # Use Pose to find where HEAD vs HIPS are
+                    _, p_res = detector.find_pose(frame, draw=False)
+                    lm = detector.get_landmarks()
+                    if lm:
+                        nose, l_hip, r_hip = lm[0], lm[23], lm[24]
+                        mid_hip_y = (l_hip.y + r_hip.y) / 2
+                        
+                        # Is the person already upright? (Nose significantly above hips)
+                        if nose.y < mid_hip_y - 0.15:
+                            print("Person is already upright in landscape. No rotation needed.")
+                            break
+                        
+                        # If body is horizontal (Sideways squat)
+                        dx = abs(nose.x - (l_hip.x + r_hip.x)/2)
+                        dy = abs(nose.y - mid_hip_y)
+                        
+                        if dx > dy * 1.2:
+                            rotation_code = cv2.ROTATE_90_CLOCKWISE if nose.x < l_hip.x else cv2.ROTATE_90_COUNTERCLOCKWISE
+                            print(f"VISION FIX: Sideways body detected. Applying rotation: {rotation_code}")
+                            break
+                scan_cap.release()
+            except Exception as e:
+                print(f"Gravity scan failed: {e}")
+    
+    if rotation_code in [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
         width, height = height, width
 
     # Robust VideoWriter selection for both Local and Cloud
