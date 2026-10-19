@@ -6,7 +6,7 @@ class ExerciseDetector:
         self.window_size = window_size
         self.buffer = deque(maxlen=window_size)
         self.confidence_votes = deque(maxlen=30)  # Reduced from 45 to 30 for faster voting
-        self.exercises = ["Squat", "Deadlift", "Push-Up", "Bench Press", "Seated Bench Press", "Lunge", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips"]
+        self.exercises = ["Squat", "Deadlift", "Push-Up", "Bench Press", "Seated Bench Press", "Lunge", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips", "Bent-over Row", "T-bar Row"]
         self.last_guess = None  # Track last guess for debugging
         
     def _get_angle(self, a, b, c):
@@ -28,33 +28,32 @@ class ExerciseDetector:
         if len(self.buffer) < int(self.window_size * 0.5):  # 50% of window size (30 frames)
             return None
         
-        # 1. Motion Analysis - More lenient thresholds
-        hip_y = [np.mean([lm[23].y, lm[24].y]) for lm in self.buffer]
-        elbow_y = [np.mean([lm[13].y, lm[14].y]) for lm in self.buffer]
-        shoulder_y = [np.mean([lm[11].y, lm[12].y]) for lm in self.buffer]
-        
-        hip_x = [np.mean([lm[23].x, lm[24].x]) for lm in self.buffer]
-        elbow_x = [np.mean([lm[13].x, lm[14].x]) for lm in self.buffer]
-        shoulder_x = [np.mean([lm[11].x, lm[12].x]) for lm in self.buffer]
-        
-        hip_rom_y = max(hip_y) - min(hip_y)
-        elbow_rom_y = max(elbow_y) - min(elbow_y)
-        shoulder_rom_y = max(shoulder_y) - min(shoulder_y)
+        # 1. Motion Analysis - Scale-invariant ROM per joint
+        def get_max_rom(idx_list):
+            roms = []
+            for i in idx_list:
+                vals_y = [lm[i].y for lm in self.buffer]
+                vals_x = [lm[i].x for lm in self.buffer]
+                roms.append(max(max(vals_y) - min(vals_y), max(vals_x) - min(vals_x)))
+            return max(roms)
 
-        hip_rom_x = max(hip_x) - min(hip_x)
-        elbow_rom_x = max(elbow_x) - min(elbow_x)
-        shoulder_rom_x = max(shoulder_x) - min(shoulder_x)
+        hip_rom = get_max_rom([23, 24])
+        elbow_rom = get_max_rom([13, 14])
+        shoulder_rom = get_max_rom([11, 12])
+        combined_elbow_rom = elbow_rom
+
+        # Separate Y-ROM for kinematic checks
+        l_hip_y = [lm[23].y for lm in self.buffer]; r_hip_y = [lm[24].y for lm in self.buffer]
+        hip_rom_y = max(max(l_hip_y)-min(l_hip_y), max(r_hip_y)-min(r_hip_y))
         
-        # Combined ROM for more robust movement detection
-        hip_rom = max(hip_rom_y, hip_rom_x * 0.7) # X-movement weighted slightly less for trunk
-        elbow_rom = max(elbow_rom_y, elbow_rom_x)
-        shoulder_rom = max(shoulder_rom_y, shoulder_rom_x)
-        combined_elbow_rom = elbow_rom # Consistent alias for exercise heuristics
+        l_elbow_y = [lm[13].y for lm in self.buffer]; r_elbow_y = [lm[14].y for lm in self.buffer]
+        elbow_rom_y = max(max(l_elbow_y)-min(l_elbow_y), max(r_elbow_y)-min(r_elbow_y))
         
-        # Reduced movement threshold from 15% to 10% to catch smaller movements (like push-ups)
-        # Include shoulder ROM for push-up detection
-        # EXCEPTION: Allow static exercises (like planks) to pass through
-        has_movement = hip_rom >= 0.10 or elbow_rom >= 0.10 or shoulder_rom >= 0.10
+        l_shoulder_y = [lm[11].y for lm in self.buffer]; r_shoulder_y = [lm[12].y for lm in self.buffer]
+        shoulder_rom_y = max(max(l_shoulder_y)-min(l_shoulder_y), max(r_shoulder_y)-min(r_shoulder_y))
+
+        # Reduced movement threshold from 0.10 to 0.05 to catch small ROM exercises
+        has_movement = hip_rom >= 0.05 or elbow_rom >= 0.05 or shoulder_rom >= 0.05
         
         # Check for horizontal position (potential plank) even with low movement
         def is_horizontal(lm):
@@ -67,7 +66,7 @@ class ExerciseDetector:
         is_likely_plank = horizontal_ratio > 0.7  # High horizontal ratio with low movement = plank
         
         # Filter out low movement UNLESS it's a plank or horizontal exercise
-        # Relaxed to allow push-ups with smaller ROM
+        # Rows might have low ROM in some views, so we use the 0.05 threshold
         is_likely_horizontal_exercise = horizontal_ratio > 0.5  # Could be push-up or plank
         if not has_movement and not is_likely_plank and not is_likely_horizontal_exercise:
             return None
@@ -100,7 +99,8 @@ class ExerciseDetector:
         
         # PRIORITY CHECK: Deadlift High ROM
         # Used to distinguish from squat
-        hip_rom_val = max(hip_y) - min(hip_y) # Pure vertical ROM for hips
+        hip_y_vals = [np.mean([lm[23].y, lm[24].y]) for lm in self.buffer]
+        hip_rom_val = max(hip_y_vals) - min(hip_y_vals) # Pure vertical ROM for hips
 
         # PRIORITY CHECK: Deadlift Detection (Before Horizontal Check)
         # Deadlifts have horizontal torso but hands are LOW (near ground), not at shoulder level
@@ -141,23 +141,43 @@ class ExerciseDetector:
             (arm_spread_std > 0.12 and leg_spread_std > 0.06)):
             current_guess = "Jumping Jacks"
             
-        # Horizontal Check - Improved for Push-Ups and Planks
-        if current_guess is None:
-            # Check if TORSO is horizontal (Shoulder to Hip) - Critical for distinguishing from Lunges
-            def is_torso_horizontal(lm):
-                body_y_diff = abs(lm[11].y - lm[23].y)
-                body_x_diff = abs(lm[11].x - lm[23].x)
-                return body_x_diff > body_y_diff
-            
-            torso_horizontal_frames = [is_torso_horizontal(lm) for lm in self.buffer]
-            torso_horizontal_ratio = sum(torso_horizontal_frames) / len(torso_horizontal_frames)
+        # Common positional metrics for all checks
+        shoulder_y_avg = np.mean([np.mean([lm[11].y, lm[12].y]) for lm in self.buffer])
+        hip_y_avg = np.mean([np.mean([lm[23].y, lm[24].y]) for lm in self.buffer])
+        ankle_y_avg = np.mean([np.mean([lm[27].y, lm[28].y]) for lm in self.buffer])
+        standing_height = abs(shoulder_y_avg - ankle_y_avg)
+        
+        # TORSO Analysis (Shoulder to Hip) - Lean Ratio
+        def get_torso_lean(lm):
+            sh_x = (lm[11].x + lm[12].x)/2; sh_y = (lm[11].y + lm[12].y)/2
+            hip_x = (lm[23].x + lm[24].x)/2; hip_y = (lm[23].y + lm[24].y)/2
+            return abs(sh_x - hip_x) / (abs(sh_y - hip_y) + 1e-6)
+        
+        torso_leans = [get_torso_lean(lm) for lm in self.buffer]
+        avg_torso_lean = np.mean(torso_leans) # Higher = more horizontal. 1.0 = 45 deg, 0.4 = ~22 deg
 
-            # Reuse horizontal_ratio already calculated above
-            # Require BOTH body and torso to be horizontal to confirm Push-Up/Plank/Bench Press
-            # This prevents Lunges (vertical torso) from being misidentified
-            # REMOVED hands_below_hips_ratio check - it was blocking push-ups (where hands are on ground/below hips)
-            # Deadlifts are already excluded because they don't meet the horizontal_ratio > 0.5 check
-            if horizontal_ratio > 0.5 and torso_horizontal_ratio > 0.5:
+        # 1. BENT-OVER ROW (Must be checked early because it has horizontal torso but vertical legs)
+        if current_guess is None:
+            torso_h = abs(shoulder_y_avg - hip_y_avg)
+            torso_w = np.mean([abs(lm[11].x - lm[23].x) for lm in self.buffer])
+            
+            # Row Indicators:
+            # - Pulling motion (ROM > 0.04)
+            # - Leaning (Torso width > 15% of torso height)
+            # - Arms move significantly compared to hips
+            
+            is_pulling_motion = combined_elbow_rom > 0.04
+            # Lean check using continuous metric (avg_torso_lean > 0.25 is reaching forward lean)
+            is_leaning = avg_torso_lean > 0.25 
+            # Kinematic check: Arms must move at least as much as hips
+            is_kinematic_row = combined_elbow_rom > (hip_rom_y * 0.8)
+            
+            if is_pulling_motion and is_leaning and standing_height > 0.10 and is_kinematic_row:
+                current_guess = "Bent-over Row"
+
+        # 2. Horizontal Check - Improved for Push-Ups and Planks
+        if current_guess is None:
+            if horizontal_ratio > 0.5 and avg_torso_lean > 0.6:
                 # Multiple indicators for push-up vs plank vs bench press
                 # 1. Elbow ROM (reduced threshold from 0.1 to 0.08)
                 # 2. Shoulder vertical movement
@@ -249,12 +269,8 @@ class ExerciseDetector:
                     if is_vertically_flat:
                         current_guess = "Plank"
 
-        # Vertical Check
+        # Vertical Check (Squat, Lunge, Deadlift, Dips, Seated)
         if current_guess is None:
-            shoulder_y_avg = np.mean([np.mean([lm[11].y, lm[12].y]) for lm in self.buffer])
-            hip_y_avg = np.mean([np.mean([lm[23].y, lm[24].y]) for lm in self.buffer])
-            ankle_y_avg = np.mean([np.mean([lm[27].y, lm[28].y]) for lm in self.buffer])
-            
             # Check for Seated Bench Press (Machine) (Vertical Body + Hands at Chest Level)
             is_vertical_torso = abs(shoulder_y_avg - hip_y_avg) > 0.08
             
@@ -276,32 +292,36 @@ class ExerciseDetector:
                 knee_y_diffs = [ abs(lm[25].y - lm[26].y) for lm in self.buffer ]
                 knee_diff_rom = max(knee_y_diffs) - min(knee_y_diffs)
                 avg_knee_diff = np.mean(knee_y_diffs)
+                max_knee_diff = max(knee_y_diffs)
                 
                 ankle_dists = [ abs(lm[27].x - lm[28].x) for lm in self.buffer ]
                 avg_ankle_dist = np.mean(ankle_dists)
+                max_ankle_dist = max(ankle_dists)
                 
                 # Lunge High Sensitivity Check
                 # 1. Strong Knee Asymmetry (Vertical Diff): Squats are symmetrical. Lunges are not.
-                # If knees are vertically different by >15%, it's definitely a lunge (or weird squat).
-                # This catches lunges even if foot spread (x-axis) looks small (e.g. frontal view).
-                is_knee_asymmetric = avg_knee_diff > 0.15
+                # Use MAX diff for better sensitivity during the bottom of the rep
+                is_knee_asymmetric = (max_knee_diff > 0.10) or (avg_knee_diff > 0.04)
                 
                 # 2. Standard Lunge Check (Stance + Moderate Asymmetry)
-                is_standard_lunge = (avg_knee_diff > 0.05 and avg_ankle_dist > 0.12)
+                # Capture lunges where foot spread is visible but knees appear vertically closer
+                is_standard_lunge = (avg_knee_diff > 0.03 and max_ankle_dist > 0.10)
                 
-                # 3. Dynamic Lunge Check (Changing Asymmetry + Width)
-                is_dynamic_lunge = (knee_diff_rom > 0.08 and avg_ankle_dist > 0.12)
+                # 3. Dynamic Lunge Check (Changing Asymmetry)
+                is_dynamic_lunge = (knee_diff_rom > 0.05)
 
                 is_lunge = is_knee_asymmetric or is_standard_lunge or is_dynamic_lunge
                 
-                # GUARD: Seated Flys often have wide feet (asymmetric look) but huge arm spread
-                # Lunges usually have fixed arm width (holding weights)
-                # If arms are flapping (Fly) and hips are static (Seated), it's NOT a Lunge
-                # RELAXED THRESHOLDS: Allow more hip movement (0.12) and less arm spread (0.12)
+                # GUARD: Rows and Deadlifts often have bent torso or high elbow movement
+                # Lunges typically have fixed or neutral elbows during the movement
+                if is_lunge:
+                    # Sensitive guard: if arms are moving OR torso is leaned, probably not a standard lunge
+                    if avg_torso_lean > 0.35 or elbow_rom_y > 0.04:
+                        is_lunge = False
+                
+                # GUARD: Seated Flys often have wide feet but static hips
                 if is_lunge and arm_spread_rom > 0.12:
-                     # Strong Guard: If hips are stable (< 0.10) OR Arm Spread is dominant (> 0.15)
-                     # Reject Lunge even if knees are asymmetric (e.g. crossed legs)
-                     if hip_rom_y < 0.10 or arm_spread_rom > 0.15:
+                     if hip_rom_y < 0.08 or arm_spread_rom > 0.18:
                         is_lunge = False
                 
                 if is_lunge:
@@ -310,41 +330,33 @@ class ExerciseDetector:
                     # Check for Deadlift vs Squat
                     torso_heights = [ abs(lm[11].y - lm[23].y) for lm in self.buffer ]
                     hands_low_frames = [ (lm[15].y > lm[23].y and lm[16].y > lm[24].y) for lm in self.buffer ]
-                    # Deadlift: Torso height changes significantly while hands stay low
                     torso_rom = max(torso_heights) - min(torso_heights)
                     
-                    # Improved deadlift detection: hands should stay consistently low
                     if torso_rom > 0.10 and sum(hands_low_frames) > self.window_size * 0.65:
                         current_guess = "Deadlift"
-                    elif hip_rom > 0.08:  # Further reduced threshold for squat detection
-                        # Differentiate Squat vs Dips using KNEE ANGLE ROM
-                        # Squats: Massive Knee Flexion (180 -> 90 -> 180). High Knee ROM.
-                        # Dips: Knees Static (Straight or Bent 90). Low Knee ROM.
-                        
-                        l_knee_angles = [self._get_angle(lm[23], lm[25], lm[27]) for lm in self.buffer]
-                        r_knee_angles = [self._get_angle(lm[24], lm[26], lm[28]) for lm in self.buffer]
-                        
-                        # Calculate ROM (Max - Min)
-                        l_knee_rom = max(l_knee_angles) - min(l_knee_angles)
-                        r_knee_rom = max(r_knee_angles) - min(r_knee_angles)
-                        avg_knee_rom = (l_knee_rom + r_knee_rom) / 2
-                        
-                        # Squats typically have > 30 degrees change. Dips have < 15.
-                        if avg_knee_rom > 20: 
-                            current_guess = "Squat"
-                        else:
-                            # If knees aren't bending, it might be Dips OR user just standing
-                            # Check Arm Movement (Elbow ROM) for Dips
-                            l_elbow_angles = [self._get_angle(lm[11], lm[13], lm[15]) for lm in self.buffer]
-                            r_elbow_angles = [self._get_angle(lm[12], lm[14], lm[16]) for lm in self.buffer]
-                            avg_elbow_rom = ((max(l_elbow_angles)-min(l_elbow_angles)) + (max(r_elbow_angles)-min(r_elbow_angles))) / 2
+                    elif hip_rom > 0.08:
+                        # SQUAT SYMMETRY GUARD: Squats MUST be symmetrical. 
+                        # If legs are even slightly asymmetric, we skip Squat (might be a partial Lunge).
+                        if avg_knee_diff < 0.06:
+                            l_knee_angles = [self._get_angle(lm[23], lm[25], lm[27]) for lm in self.buffer]
+                            r_knee_angles = [self._get_angle(lm[24], lm[26], lm[28]) for lm in self.buffer]
+                            l_knee_rom = max(l_knee_angles) - min(l_knee_angles)
+                            r_knee_rom = max(r_knee_angles) - min(r_knee_angles)
+                            avg_knee_rom = (l_knee_rom + r_knee_rom) / 2
                             
-                            # Check Hand Height (Dips hands vary relative to shoulder due to body moving)
-                            # But generally Dips are arm-driven.
-                            if avg_elbow_rom > 30:
-                                current_guess = "Dips"
+                            if avg_knee_rom > 20: 
+                                current_guess = "Squat"
                             else:
-                                current_guess = "Squat" # Default to Squat if unsure but hips moving (could be partial)
+                                l_elbow_angles = [self._get_angle(lm[11], lm[13], lm[15]) for lm in self.buffer]
+                                r_elbow_angles = [self._get_angle(lm[12], lm[14], lm[16]) for lm in self.buffer]
+                                avg_elbow_rom = ((max(l_elbow_angles)-min(l_elbow_angles)) + (max(r_elbow_angles)-min(r_elbow_angles))) / 2
+                                if avg_elbow_rom > 30 and torso_horizontal_ratio < 0.25:
+                                    current_guess = "Dips"
+                                else:
+                                    current_guess = "Squat"
+                        else:
+                            # If asymmetric but failed Lunge check, it's still likely a Lunge (partial/frontal)
+                            current_guess = "Lunge" 
 
             # 2. CHECK SEATED / UPPER BODY EXERCISES (Fly, Press)
             # Only if no leg exercise detected AND NOT CLEARLY STANDING
@@ -438,8 +450,9 @@ class ExerciseDetector:
                         elif combined_elbow_rom > 0.06 and hip_rom_y < 0.12 and not hands_are_low:
                               current_guess = "Seated Bench Press"
             
-            # 3. DIPS
-            if current_guess is None and is_vertical_torso and shoulder_rom_y > 0.08 and hands_below_hips_ratio > 0.6:
+            # 3. DIPS (Standard / Manual)
+            # Must have vertical torso and hands below hips
+            if current_guess is None and is_vertical_torso and shoulder_rom_y > 0.08 and hands_below_hips_ratio > 0.6 and torso_horizontal_ratio < 0.25:
                 current_guess = "Dips"
             
             # 4. Voting & Confidence - Ultra responsive

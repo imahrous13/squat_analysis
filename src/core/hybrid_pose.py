@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+from src.core.pose_config import create_mediapipe_pose
 
 class RoiManager:
     def __init__(self, padding_pct=0.2, smooth_factor=0.3):
@@ -58,7 +59,7 @@ class HybridPoseEstimator:
     Hybrid Pipeline: YOLOv8 Detection -> ROI Crop -> MediaPipe Pose -> Full Frame Mapping
     Drop-in replacement for PoseDetector.
     """
-    def __init__(self, model_path='yolov8n.pt', min_detection_conf=0.5, min_pose_conf=0.5):
+    def __init__(self, model_path='yolov8n.pt', min_detection_conf=0.5, min_pose_conf=None):
         from ultralytics import YOLO
         import mediapipe as mp
             
@@ -67,13 +68,11 @@ class HybridPoseEstimator:
         self.mp_pose = mp.solutions.pose
         self.mp_drawing = mp.solutions.drawing_utils
         
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=1, # Use Balanced model for significantly better stability
-            smooth_landmarks=True, # Enable smoothing to reduce jitter
-            min_detection_confidence=min_pose_conf,
-            min_tracking_confidence=min_pose_conf
-        )
+        pose_overrides = {}
+        if min_pose_conf is not None:
+            pose_overrides["min_detection_confidence"] = min_pose_conf
+            pose_overrides["min_tracking_confidence"] = min_pose_conf
+        self.pose = create_mediapipe_pose(self.mp_pose, mode="hybrid", **pose_overrides)
         self.min_det_conf = min_detection_conf
         self.last_landmarks = None 
         
@@ -187,6 +186,11 @@ class HybridPoseEstimator:
             # 2. ROI
             # roi_coords already set
             roi_crop = self.roi_manager.crop_frame(frame, roi_coords)
+            
+            # CRITICAL FIX: Ensure crop is not empty before processing
+            if roi_crop is None or roi_crop.size == 0:
+                return frame, None
+
             roi_rgb = cv2.cvtColor(roi_crop, cv2.COLOR_BGR2RGB)
             
             # 3. Pose

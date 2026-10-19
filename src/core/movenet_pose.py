@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+from src.core.pose_config import create_mediapipe_pose
 
 class MoveNetLandmark:
     def __init__(self, x, y, visibility):
@@ -11,20 +12,14 @@ class MoveNetLandmark:
 
 class MoveNetEstimator:
     def __init__(self, model_path=None):
-        # Optimized MediaPipe configuration for Cloud stability
         import mediapipe as mp
         self.mp_pose = mp.solutions.pose
         self.mp_drawing = mp.solutions.drawing_utils
         
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=1,              # Increased from 0 to 1 for better accuracy
-            smooth_landmarks=True,           # Enable smoothing to reduce jitter
-            enable_segmentation=False,       # Disable segmentation for performance
-            min_detection_confidence=0.6,    # Increased from 0.5 for more reliable detection
-            min_tracking_confidence=0.7      # Increased from 0.5 for smoother tracking
-        )
+        self.pose = create_mediapipe_pose(self.mp_pose, mode="default")
         self.last_landmarks = None
+        self._active_side_is_left = None  # sticky side for visibility boost
+        self._side_switch_margin = 0.15   # hysteresis to prevent side flipping
         
     def find_pose(self, frame, draw=True, enhance_side_view=True):
         h, w, _ = frame.shape
@@ -48,26 +43,32 @@ class MoveNetEstimator:
 
     def _enhance_side_view_landmarks(self):
         """
-        Enhance side-view detection by boosting the visibility of the active side
-        and reducing noise from the far side (side facing away from camera).
+        Gently boost the more-visible side; sticky hysteresis prevents frame-to-frame flips.
         """
         if not self.last_landmarks:
             return
         
-        # Determine which side is more visible (higher visibility scores)
         left_shoulder_vis = self.last_landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].visibility
         right_shoulder_vis = self.last_landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value].visibility
         left_hip_vis = self.last_landmarks[self.mp_pose.PoseLandmark.LEFT_HIP.value].visibility
         right_hip_vis = self.last_landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP.value].visibility
         
-        # Calculate average visibility for each side
         left_avg_vis = (left_shoulder_vis + left_hip_vis) / 2
         right_avg_vis = (right_shoulder_vis + right_hip_vis) / 2
         
-        # Determine active side (more visible side)
-        active_side_is_left = left_avg_vis > right_avg_vis
+        if self._active_side_is_left is None:
+            self._active_side_is_left = left_avg_vis >= right_avg_vis
+        else:
+            margin = self._side_switch_margin
+            if self._active_side_is_left:
+                if right_avg_vis > left_avg_vis + margin:
+                    self._active_side_is_left = False
+            else:
+                if left_avg_vis > right_avg_vis + margin:
+                    self._active_side_is_left = True
         
-        # Define landmark indices for each side
+        active_side_is_left = self._active_side_is_left
+        
         left_indices = [
             self.mp_pose.PoseLandmark.LEFT_SHOULDER.value,
             self.mp_pose.PoseLandmark.LEFT_ELBOW.value,
@@ -90,22 +91,17 @@ class MoveNetEstimator:
             self.mp_pose.PoseLandmark.RIGHT_FOOT_INDEX.value,
         ]
         
-        # Boost active side visibility and reduce far side
-        boost_factor = 1.15  # Boost active side by 15%
-        reduce_factor = 0.85  # Reduce far side by 15%
+        boost_factor = 1.08
+        reduce_factor = 0.92
         
         if active_side_is_left:
-            # Boost left side
             for idx in left_indices:
                 self.last_landmarks[idx].visibility = min(1.0, self.last_landmarks[idx].visibility * boost_factor)
-            # Reduce right side
             for idx in right_indices:
                 self.last_landmarks[idx].visibility *= reduce_factor
         else:
-            # Boost right side
             for idx in right_indices:
                 self.last_landmarks[idx].visibility = min(1.0, self.last_landmarks[idx].visibility * boost_factor)
-            # Reduce left side
             for idx in left_indices:
                 self.last_landmarks[idx].visibility *= reduce_factor
 

@@ -1,5 +1,5 @@
 import os
-print("🚀 App starting... Setting environment variables.")
+print("App starting... Setting environment variables.")
 # CRITICAL: Set environment variables BEFORE any other imports to prevent crashes on Cloud
 os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -45,6 +45,9 @@ def get_exercise_detector():
     from src.core.exercise_detector import ExerciseDetector
     return ExerciseDetector()
 
+from src.core.landmark_stabilizer import LandmarkStabilizer
+from src.core.auto_detect import AutoDetectResolver
+
 def get_analyzer_class(exercise_type):
     """Lazy load analyzer classes only when needed"""
     if exercise_type == "Squat":
@@ -83,6 +86,12 @@ def get_analyzer_class(exercise_type):
     elif exercise_type == "Seated Dips":
         from src.analyzers.dips_analyzer import DipsAnalyzer
         return DipsAnalyzer
+    elif exercise_type == "Bent-over Row":
+        from src.analyzers.row_analyzer import RowAnalyzer
+        return RowAnalyzer
+    elif exercise_type == "T-bar Row":
+        from src.analyzers.row_analyzer import TBarRowAnalyzer
+        return TBarRowAnalyzer
     return None
 
 def get_utils():
@@ -102,9 +111,18 @@ def reencode_video_for_browser(input_path, output_path=None):
     if not os.path.exists(input_path): return input_path, "Not found"
     if output_path is None: output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
     try:
+        if not os.path.exists(input_path) or os.path.getsize(input_path) < 100: 
+            return input_path, "Processed video is empty or too small to optimize."
+            
         import av
-        input_container = av.open(input_path)
-        output_container = av.open(output_path, mode='w', format='mp4')
+        try:
+            input_container = av.open(input_path)
+        except Exception as e:
+            if "moov atom not found" in str(e):
+                return input_path, "Video header (moov atom) missing. The process might have been interrupted."
+            return input_path, f"Failed to open intermediate video: {str(e)}"
+
+        output_container = av.open(output_path, mode='w', format='mp4', options={'movflags': 'faststart'})
         in_stream = input_container.streams.video[0]
         
         # The processed video already has correct physical dimensions.
@@ -130,17 +148,28 @@ class BaseVideoProcessor(VideoProcessorBase):
         self.analyzer = analyzer_class(**analyzer_args) if analyzer_class else None
         self.exercise_name = analyzer_class.__name__.replace('Analyzer', '') if analyzer_class else "Detecting..."
         self.exercise_detector = get_exercise_detector()
+        self.landmark_stabilizer = LandmarkStabilizer(hold_frames=8)
+        self.auto_detect_resolver = AutoDetectResolver() if analyzer_class is None else None
+        self.exercise_locked = analyzer_class is not None
         self.p_time = 0
         self.recording_path = recording_path
         self.out = None
+        self.frame_count = 0
 
     def stop_recording(self):
         if self.out:
             self.out.release()
             self.out = None
+        self.exercise_detector.reset()
+        self.landmark_stabilizer.reset()
+        if self.auto_detect_resolver:
+            self.auto_detect_resolver.reset()
+        self.exercise_locked = self.analyzer is not None
 
     def __del__(self):
-        self.stop_recording()
+        if self.out:
+            self.out.release()
+            self.out = None
 
     def recv(self, frame):
         draw_text_with_background, get_landmark_pixel = get_utils()
@@ -149,15 +178,34 @@ class BaseVideoProcessor(VideoProcessorBase):
         
         # Pose Detection
         img, results = self.detector.find_pose(img, draw=True)
-        landmarks = self.detector.get_landmarks()
+        landmarks = self.landmark_stabilizer.update(self.detector.get_landmarks())
         
         analysis_data = {}
         if landmarks:
             # Auto-Detect Exercise if not set
-            if self.analyzer is None:
+            if self.analyzer is None and not self.exercise_locked:
+                ai_hint = None
+                if self.frame_count % 60 == 0:
+                    try:
+                        classifier = get_workout_classifier()
+                        predictions = classifier.classify(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                        if predictions:
+                            best_label, confidence = predictions[0]
+                            if confidence > 0.65:
+                                ai_hint = best_label
+                                print(f"Webcam AI Classifier Hint: {ai_hint} ({confidence:.2%})")
+                    except Exception as e:
+                        print(f"AI Classifier Error: {e}")
+
                 self.exercise_detector.add_frame(landmarks)
-                detected = self.exercise_detector.detect()
+                heuristic_detected = self.exercise_detector.detect()
+                detected = None
+                if self.auto_detect_resolver:
+                    detected = self.auto_detect_resolver.resolve(
+                        self.exercise_detector, heuristic_detected, ai_hint)
+
                 if detected:
+                    self.exercise_locked = True
                     self.exercise_name = detected
                     analyzer_class = get_analyzer_class(detected)
                     
@@ -170,7 +218,8 @@ class BaseVideoProcessor(VideoProcessorBase):
                         self.analyzer.is_active = True
                         self.analyzer.feedback = "Exercise Detected! Hold your plank."
                     elif self.analyzer:
-                        self.analyzer.feedback = "Exercise Detected! Start your reps."
+                        self.analyzer.feedback = f"{self.exercise_name} detected! Start your reps."
+                    print(f"Exercise locked: {detected}")
             
             if self.analyzer:
                 try:
@@ -238,6 +287,7 @@ class BaseVideoProcessor(VideoProcessorBase):
                         self.out = cv2.VideoWriter(self.recording_path, fourcc, 20.0, (w, h))
             self.out.write(img)
             
+        self.frame_count += 1
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
@@ -253,18 +303,19 @@ class BaseVideoProcessor(VideoProcessorBase):
         draw_text_with_background(img, f"Exercise: {self.exercise_name}", (10, y_pos), text_color=(255, 255, 255))
         
         y_pos += 40
-        draw_text_with_background(img, f"State: {analysis_data['state']}", (10, y_pos), text_color=state_color)
+        draw_text_with_background(img, f"State: {analysis_data.get('state', 'N/A')}", (10, y_pos), text_color=state_color)
         
         y_pos += 40
         draw_text_with_background(img, f"Muscles: {analysis_data.get('target_muscles', 'N/A')}", (10, y_pos), font_scale=0.6, text_color=(255, 150, 0))
         
         y_pos += 40
+        display_rep_count = analysis_data.get('rep_count', 0)
         c_reps = analysis_data.get('correct_reps', 0)
         i_reps = analysis_data.get('incorrect_reps', 0)
-        
-        display_rep_count = analysis_data.get('rep_count', 0)
-        if self.exercise_name not in ["Plank", "Deadlift", "Lunge"] and analysis_data.get('state') != "ANALYZING...":
-            display_rep_count = c_reps + i_reps
+        if self.exercise_name in ["Plank", "Deadlift", "Lunge"]:
+            pass  # use rep_count directly
+        elif analysis_data.get('state') != "ANALYZING...":
+            display_rep_count = max(display_rep_count, c_reps + i_reps)
 
         draw_text_with_background(img, f"Reps: {display_rep_count}", (10, y_pos), font_scale=0.8, thickness=2)
         
@@ -403,10 +454,35 @@ class SeatedDipsVideoProcessor(BaseVideoProcessor):
     def __init__(self, recording_path=None, use_hybrid=False): 
         super().__init__(get_analyzer_class("Seated Dips"), recording_path, use_hybrid, variant="seated")
 
+class RowVideoProcessor(BaseVideoProcessor):
+    def __init__(self, recording_path=None, use_hybrid=False, exercise_name="Bent-over Row"): 
+        super().__init__(get_analyzer_class(exercise_name), recording_path, use_hybrid)
+    def _draw_specifics(self, img, landmarks, analysis_data, w, h):
+        _, get_landmark_pixel = get_utils()
+        angle = analysis_data.get('elbow_angle', 0)
+        trunk = analysis_data.get('trunk_angle', 0)
+        if angle > 0:
+            # Draw elbow angle
+            side = analysis_data.get('side', 'left')
+            idx = 13 if side == 'left' else 14
+            pos = get_landmark_pixel(landmarks[idx], w, h)
+            cv2.putText(img, f"Elbow: {int(angle)}", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+        if trunk > 0:
+            # Draw trunk angle at hip
+            pos = get_landmark_pixel(landmarks[23], w, h)
+            cv2.putText(img, f"Trunk: {int(trunk)}", (pos[0], pos[1]-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+
+class TBarRowVideoProcessor(RowVideoProcessor):
+    def __init__(self, recording_path=None, use_hybrid=False): 
+        super().__init__(recording_path, use_hybrid, exercise_name="T-bar Row")
+        self.exercise_name = "T-bar Row"
+
 class AutoDetectVideoProcessor(BaseVideoProcessor):
     def __init__(self, recording_path=None, use_hybrid=False): super().__init__(None, recording_path, use_hybrid)
     def _draw_specifics(self, img, landmarks, analysis_data, w, h):
         pass
+
+from src.core.classifier import get_workout_classifier
 
 def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     draw_text_with_background, get_landmark_pixel = get_utils()
@@ -418,22 +494,42 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     
     detector = get_pose_detector(use_hybrid)
         
-    # --- NEW VISION-BASED ROTATION LOGIC ---
+    # --- ROTATION LOGIC (Hybrid: Metadata + Vision) ---
     rotation_code = None
     
-    # 1. Portrait Guard: If video is already Tall, do NOT touch it.
-    if height > width:
-        print(f"Video is already Portrait ({width}x{height}). No rotation needed.")
-    else:
-        # 2. Gravity Scan: Only scan if it's currently wide (Landscape)
-        # Avoid rotating during Auto-Detect or for horizontal moves
-        horizontal_moves = ["Auto-Detect", "Push-Up", "Plank", "Bench Press", "Chest Fly", "Seated Chest Fly"]
+    # 1. Metadata Scan (Official tags) - Most robust for phone videos
+    try:
+        import av
+        container = av.open(input_path)
+        stream = container.streams.video[0]
+        metadata = getattr(stream, 'metadata', {})
+        tags = getattr(stream, 'tags', {})
         
-        if mode not in horizontal_moves:
+        angle = 0
+        rot_val = metadata.get('rotate') or tags.get('rotate')
+        if rot_val: angle = int(float(rot_val))
+        
+        if angle == 0 and hasattr(stream, 'side_data'):
+            for sd in stream.side_data:
+                if 'DISPLAY_MATRIX' in str(getattr(sd, 'type', '')):
+                    if hasattr(sd, 'rotation'): angle = int(sd.rotation)
+
+        if angle % 360 == 90: rotation_code = cv2.ROTATE_90_CLOCKWISE
+        elif angle % 360 == 180: rotation_code = cv2.ROTATE_180
+        elif angle % 360 == 270: rotation_code = cv2.ROTATE_90_COUNTERCLOCKWISE
+        if rotation_code is not None: 
+            print(f"Metadata Orientation Detected: {angle} degrees")
+        container.close()
+    except: pass
+
+    # 2. Lazy Phone Fix: If metadata is missing but video is wide, check if person is sideways
+    if rotation_code is None and width > height:
+        horizontal_exercises = ["Push-Up", "Plank", "Bench Press", "Chest Fly", "Seated Chest Fly"]
+        if mode not in horizontal_exercises:
             try:
-                print(f"Scanning wide video ({width}x{height}) for orientation...")
+                print("Checking for 'Lazy Phone' orientation (Wide frame, no metadata)...")
                 scan_cap = cv2.VideoCapture(input_path)
-                for _ in range(30): # Scan ~1 second
+                for _ in range(25): # Fast scan
                     ret, frame = scan_cap.read()
                     if not ret: break
                     
@@ -443,54 +539,77 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
                     if lm:
                         nose, l_hip, r_hip = lm[0], lm[23], lm[24]
                         mid_hip_y = (l_hip.y + r_hip.y) / 2
+                        mid_hip_x = (l_hip.x + r_hip.x) / 2
                         
-                        # Is the person already upright? (Nose significantly above hips)
-                        if nose.y < mid_hip_y - 0.15:
-                            print("Person is already upright in landscape. No rotation needed.")
+                        # 1. THE UPRIGHT GUARD (CRITICAL)
+                        # If person is already standing (Nose significantly above hips vertically), 
+                        # this video does NOT need rotation. STOP.
+                        if nose.y < mid_hip_y - 0.2:
+                            print("Person is already upright in Landscape. Aborting rotation fix.")
+                            rotation_code = None
                             break
                         
-                        # If body is horizontal (Sideways squat)
-                        dx = abs(nose.x - (l_hip.x + r_hip.x)/2)
+                        # Check YOLO for "Side-Lying" posture
+                        if hasattr(detector, 'yolo'):
+                            res = detector.yolo.predict(frame, verbose=False, classes=[0], conf=0.5)
+                            if res and res[0].boxes:
+                                box = res[0].boxes[0].xywh[0].cpu().numpy() # [x, y, w, h]
+                                # Sideways person in landscape has a WIDE bounding box (W > H)
+                                if box[2] > box[3] * 1.2:
+                                    rotation_code = cv2.ROTATE_90_CLOCKWISE if nose.x < mid_hip_x else cv2.ROTATE_90_COUNTERCLOCKWISE
+                                    print(f"Lazy Phone Fix (YOLO/Side-Lying): Rotating.")
+                                    break
+
+                        # Check Pose Gravity
+                        dx = abs(nose.x - mid_hip_x)
                         dy = abs(nose.y - mid_hip_y)
-                        
-                        if dx > dy * 1.2:
-                            rotation_code = cv2.ROTATE_90_CLOCKWISE if nose.x < l_hip.x else cv2.ROTATE_90_COUNTERCLOCKWISE
-                            print(f"VISION FIX: Sideways body detected. Applying rotation: {rotation_code}")
+                        if dx > dy * 1.8: # Very flat on screen
+                            rotation_code = cv2.ROTATE_90_CLOCKWISE if nose.x < mid_hip_x else cv2.ROTATE_90_COUNTERCLOCKWISE
+                            print(f"Lazy Phone Fix (Pose Gravity): Rotating sideways body.")
                             break
                 scan_cap.release()
-            except Exception as e:
-                print(f"Gravity scan failed: {e}")
+            except: pass
+
+    # 3. Portrait Guard: If video is already Portrait, skip metadata rotation to prevent double-flip.
+    if height > width and rotation_code is not None:
+         print("Video is already Portrait. Skipping metadata rotation to prevent double-flip.")
+         rotation_code = None
     
     if rotation_code in [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
         width, height = height, width
 
-    # Robust VideoWriter selection for both Local and Cloud
+    # Robust VideoWriter selection (Prioritize mp4v for .mp4 containers)
     out = None
     try:
-        # Standard MJPG - most compatible with raw server containers
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        # 1. mp4v - Native/Best for .mp4
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
         if not out.isOpened():
-             # Fallback 1: XVID
+             # 2. XVID - Good fallback
              fourcc = cv2.VideoWriter_fourcc(*'XVID')
              out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
              
         if not out.isOpened():
-             # Fallback 2: mp4v
-             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+             # 3. MJPG - Legacy fallback
+             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
              out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
              
         if not out.isOpened():
-             # Fallback 3: MJPG raw (0)
+             # Last resort: raw
              out = cv2.VideoWriter(output_path, 0, fps, (width, height))
     except Exception as e:
         print(f"Video Writer Failed: {str(e)}")
-        # Create an empty file to avoid downstream errors
-        open(output_path, 'a').close()
-        return output_path
+        return None
+
+    if out is None or not out.isOpened():
+        print("Error: Could not open any VideoWriter fallback.")
+        return None
 
     exercise_detector = get_exercise_detector()
+    landmark_stabilizer = LandmarkStabilizer(hold_frames=8)
+    auto_detect_resolver = AutoDetectResolver() if mode == "Auto-Detect" else None
+    exercise_locked = mode != "Auto-Detect"
     
     if mode == "Auto-Detect":
         analyzer = None
@@ -507,106 +626,123 @@ def process_video(input_path, output_path, mode="Squat", use_hybrid=False):
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frame_count = 0
     
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret: break
-        
-        if rotation_code is not None:
-            frame = cv2.rotate(frame, rotation_code)
-        
-        frame, _ = detector.find_pose(frame, draw=True)
-        landmarks = detector.get_landmarks()
-        
-        if landmarks:
-            if analyzer is None:
-                exercise_detector.add_frame(landmarks)
-                detected = exercise_detector.detect()
-                if detected:
-                    exercise_name = detected
-                    analyzer_class = get_analyzer_class(detected)
-                    if detected in ["Seated Bench Press", "Seated Chest Fly", "Seated Dips"]:
-                        analyzer = analyzer_class(variant="seated") if analyzer_class else None
-                    else:
-                        analyzer = analyzer_class() if analyzer_class else None
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret: break
+            
+            if rotation_code is not None:
+                frame = cv2.rotate(frame, rotation_code)
+            
+            frame, _ = detector.find_pose(frame, draw=True)
+            landmarks = landmark_stabilizer.update(detector.get_landmarks())
+            
+            if landmarks:
+                if analyzer is None and not exercise_locked:
+                    ai_hint = None
+                    if frame_count % 60 == 0:
+                        try:
+                            classifier = get_workout_classifier()
+                            predictions = classifier.classify(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                            if predictions:
+                                best_label, confidence = predictions[0]
+                                if confidence > 0.65:
+                                    ai_hint = best_label
+                        except: pass
+
+                    exercise_detector.add_frame(landmarks)
+                    heuristic_detected = exercise_detector.detect()
+                    detected = None
+                    if auto_detect_resolver:
+                        detected = auto_detect_resolver.resolve(
+                            exercise_detector, heuristic_detected, ai_hint)
+
+                    if detected:
+                        exercise_locked = True
+                        exercise_name = detected
+                        analyzer_class = get_analyzer_class(detected)
+                        if detected in ["Seated Bench Press", "Seated Chest Fly", "Seated Dips"]:
+                            analyzer = analyzer_class(variant="seated") if analyzer_class else None
+                        else:
+                            analyzer = analyzer_class() if analyzer_class else None
+                        
+                        if analyzer:
+                            analyzer.feedback = f"{exercise_name} detected! Start your reps."
+                
+                if analyzer:
+                    analysis_data = analyzer.analyze(landmarks, width, height)
+                else:
+                    buffer_size = len(exercise_detector.buffer)
+                    required_size = int(exercise_detector.window_size * 0.7)
+                    votes_size = len(exercise_detector.confidence_votes)
+                    required_votes = int(exercise_detector.confidence_votes.maxlen * 0.8)
                     
-                    if analyzer and detected not in ["Plank"]: 
-                        analyzer.rep_count = 1
-                        analyzer.correct_reps = 1
-                        analyzer.feedback = "Exercise Detected! Rep 1 counted."
-            
-            if analyzer:
-                analysis_data = analyzer.analyze(landmarks, width, height)
-            else:
-                buffer_size = len(exercise_detector.buffer)
-                required_size = int(exercise_detector.window_size * 0.7)
-                votes_size = len(exercise_detector.confidence_votes)
-                required_votes = int(exercise_detector.confidence_votes.maxlen * 0.8)
-                
-                feedback_msg = "Analyzing exercise pattern..."
-                if buffer_size < required_size:
-                    progress = int((buffer_size / required_size) * 100)
-                    feedback_msg = f"Collecting data... {progress}%"
-                elif votes_size < required_votes:
-                    progress = int((votes_size / required_votes) * 100)
-                    feedback_msg = f"Analyzing pattern... {progress}%"
-                    if exercise_detector.last_guess:
-                        feedback_msg += f" (Detecting: {exercise_detector.last_guess})"
-                
-                analysis_data = {
-                    "state": "ANALYZING...", 
-                    "rep_count": 0, 
-                    "feedback": feedback_msg, 
-                    "target_muscles": "Detecting...",
-                    "correct_reps": 0,
-                    "incorrect_reps": 0
-                }
+                    feedback_msg = "Analyzing exercise pattern..."
+                    if buffer_size < required_size:
+                        progress = int((buffer_size / required_size) * 100)
+                        feedback_msg = f"Collecting data... {progress}%"
+                    elif votes_size < required_votes:
+                        progress = int((votes_size / required_votes) * 100)
+                        feedback_msg = f"Analyzing pattern... {progress}%"
+                        if exercise_detector.last_guess:
+                            feedback_msg += f" (Detecting: {exercise_detector.last_guess})"
+                    
+                    analysis_data = {
+                        "state": "ANALYZING...", 
+                        "rep_count": 0, 
+                        "feedback": feedback_msg, 
+                        "target_muscles": "Detecting...",
+                        "correct_reps": 0,
+                        "incorrect_reps": 0
+                    }
 
-            state_color = (0, 255, 255)
-            if analysis_data.get('state') in ["BOTTOM", "LOCKOUT", "TOP_PLANK"]: state_color = (0, 255, 0)
-            
-            y_pos = 40
-            draw_text_with_background(frame, f"Exercise: {exercise_name}", (10, y_pos), text_color=(255, 255, 255))
-            
-            y_pos += 40
-            draw_text_with_background(frame, f"State: {analysis_data['state']}", (10, y_pos), text_color=state_color)
-            
-            y_pos += 40
-            draw_text_with_background(frame, f"Muscles: {analysis_data.get('target_muscles', 'N/A')}", (10, y_pos), font_scale=0.6, text_color=(255, 150, 0))
-            
-            y_pos += 40
-            c_reps = analysis_data.get('correct_reps', 0)
-            i_reps = analysis_data.get('incorrect_reps', 0)
-            
-            display_rep_count = analysis_data.get('rep_count', 0)
-            if exercise_name not in ["Plank", "Deadlift", "Lunge"] and analysis_data.get('state') != "ANALYZING...":
-                display_rep_count = c_reps + i_reps
-
-            draw_text_with_background(frame, f"Reps: {display_rep_count}", (10, y_pos), font_scale=0.8, thickness=2)
-            
-            y_pos += 35
-            
-            draw_text_with_background(frame, f"Correct: {c_reps}", (10, y_pos), font_scale=0.6, text_color=(0, 255, 0))
-            draw_text_with_background(frame, f"Incorrect: {i_reps}", (160, y_pos), font_scale=0.6, text_color=(0, 0, 255))
-            
-            y_pos += 40
-            feedback = analysis_data.get('feedback', '')
-            if feedback:
-                draw_text_with_background(frame, f"Feedback: {feedback}", (10, y_pos), text_color=(0, 100, 255))
-            
-            score = analysis_data.get('last_rep_score', 0)
-            if score > 0 and score < 70 and analysis_data.get('reasons'): 
+                state_color = (0, 255, 255)
+                if analysis_data.get('state') in ["BOTTOM", "LOCKOUT", "TOP_PLANK"]: state_color = (0, 255, 0)
+                
+                y_pos = 40
+                draw_text_with_background(frame, f"Exercise: {exercise_name}", (10, y_pos), text_color=(255, 255, 255))
+                
                 y_pos += 40
-                for r in analysis_data['reasons'][:2]:
-                    draw_text_with_background(frame, f"Fault: {r}", (10, y_pos), text_color=(0, 0, 255), font_scale=0.5)
-                    y_pos += 25
+                draw_text_with_background(frame, f"State: {analysis_data['state']}", (10, y_pos), text_color=state_color)
+                
+                y_pos += 40
+                draw_text_with_background(frame, f"Muscles: {analysis_data.get('target_muscles', 'N/A')}", (10, y_pos), font_scale=0.6, text_color=(255, 150, 0))
+                
+                y_pos += 40
+                display_rep_count = analysis_data.get('rep_count', 0)
+                c_reps = analysis_data.get('correct_reps', 0)
+                i_reps = analysis_data.get('incorrect_reps', 0)
+                if exercise_name in ["Plank", "Deadlift", "Lunge"]:
+                    pass
+                elif analysis_data.get('state') != "ANALYZING...":
+                    display_rep_count = max(display_rep_count, c_reps + i_reps)
 
-        out.write(frame)
-        frame_count += 1
-        if total_frames > 0: progress_bar.progress(frame_count / total_frames)
+                draw_text_with_background(frame, f"Reps: {display_rep_count}", (10, y_pos), font_scale=0.8, thickness=2)
+                
+                y_pos += 35
+                draw_text_with_background(frame, f"Correct: {c_reps}", (10, y_pos), font_scale=0.6, text_color=(0, 255, 0))
+                draw_text_with_background(frame, f"Incorrect: {i_reps}", (160, y_pos), font_scale=0.6, text_color=(0, 0, 255))
+                y_pos += 40
+                feedback = analysis_data.get('feedback', '')
+                if feedback:
+                    draw_text_with_background(frame, f"Feedback: {feedback}", (10, y_pos), text_color=(0, 100, 255))
+                
+                score = analysis_data.get('last_rep_score', 0)
+                if score > 0 and score < 70 and analysis_data.get('reasons'): 
+                    y_pos += 40
+                    for r in analysis_data['reasons'][:2]:
+                        draw_text_with_background(frame, f"Fault: {r}", (10, y_pos), text_color=(0, 0, 255), font_scale=0.5)
+                        y_pos += 25
 
-    cap.release()
-    out.release()
-    progress_bar.empty()
+            out.write(frame)
+            frame_count += 1
+            if total_frames > 0: progress_bar.progress(frame_count / total_frames)
+    finally:
+        cap.release()
+        if out: out.release()
+        progress_bar.empty()
+    
+    return output_path
 
 def main():
     st.set_page_config(page_title="AI Fitness Coach", layout="wide")
@@ -630,7 +766,7 @@ def main():
         use_hybrid = st.checkbox("Use AI-Enhanced Detection (YOLO + MediaPipe)", value=False, 
                                  help="Turning this on improves person detection but requires more hardware.")
     
-    exercise_type = st.radio("Select Exercise:", ["Auto-Detect", "Squat", "Lunge", "Push-Up", "Bench Press", "Seated Bench Press", "Deadlift", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips"], horizontal=True)
+    exercise_type = st.radio("Select Exercise:", ["Auto-Detect", "Squat", "Lunge", "Push-Up", "Bench Press", "Seated Bench Press", "Deadlift", "Jumping Jacks", "Plank", "Chest Fly", "Seated Chest Fly", "Dips", "Seated Dips", "Bent-over Row", "T-bar Row"], horizontal=True)
     
     # Conditionally create tabs based on WebRTC availability
     if WEBRTC_AVAILABLE:
@@ -650,23 +786,31 @@ def main():
             if st.button(f'Analyze {exercise_type}'):
                 temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
                 with st.spinner('Analyzing video...'):
-                    process_video(tfile.name, temp_output, mode=exercise_type, use_hybrid=use_hybrid)
+                    result = process_video(tfile.name, temp_output, mode=exercise_type, 
+                                  use_hybrid=use_hybrid)
                 
-                # Re-encode for browser compatibility
-                with st.spinner('Optimizing video for playback...'):
-                    output_path, err = reencode_video_for_browser(temp_output)
-                    if err: st.warning(f"Optimization warning: {err}")
+                if result is None:
+                    st.error("❌ Video processing failed. This usually means the video file is corrupted or in an unsupported format.")
+                else:
+                    # Re-encode for browser compatibility
+                    with st.spinner('Optimizing video for playback...'):
+                        optimized_output, err = reencode_video_for_browser(temp_output)
+                        if err:
+                            st.warning(f"⚠️ Optimization warning: {err}. Showing unoptimized video.")
+                            display_video = temp_output
+                        else:
+                            display_video = optimized_output
                     
-                st.success("Done!")
-                st.video(output_path)
-                
-                with open(output_path, "rb") as file:
-                    st.download_button(
-                        label="Download Analyzed Video",
-                        data=file,
-                        file_name=f"analyzed_{exercise_type.lower()}.mp4",
-                        mime="video/mp4"
-                    )
+                    st.success("Analysis Complete!")
+                    st.video(display_video)
+                    
+                    with open(display_video, "rb") as file:
+                        st.download_button(
+                            label="Download Analyzed Video",
+                            data=file,
+                            file_name=f"analyzed_{exercise_type.lower()}.mp4",
+                            mime="video/mp4"
+                        )
     
     # Webcam tab - only if WebRTC is available
     if WEBRTC_AVAILABLE:
@@ -684,14 +828,16 @@ def main():
                 "Chest Fly": ChestFlyVideoProcessor,
                 "Seated Chest Fly": SeatedChestFlyVideoProcessor,
                 "Dips": DipsVideoProcessor,
-                "Seated Dips": SeatedDipsVideoProcessor
+                "Seated Dips": SeatedDipsVideoProcessor,
+                "Bent-over Row": RowVideoProcessor,
+                "T-bar Row": TBarRowVideoProcessor
             }
             
             recording_path = st.session_state.webcam_recording
             
             ctx = webrtc_streamer(
                 key=f"{exercise_type.lower()}-analysis",
-                video_processor_factory=lambda: processors[exercise_type](recording_path, use_hybrid=use_hybrid),
+                video_processor_factory=lambda: processors[exercise_type](recording_path, use_hybrid),
                 rtc_configuration=RTC_CONFIGURATION,
                 media_stream_constraints={"video": True, "audio": False},
                 async_processing=True,
@@ -702,6 +848,10 @@ def main():
             
             if not ctx.state.playing and ctx.video_processor:
                 ctx.video_processor.stop_recording()
+                ctx.video_processor.exercise_detector.reset()
+                if ctx.video_processor.auto_detect_resolver:
+                    ctx.video_processor.auto_detect_resolver.reset()
+                ctx.video_processor.landmark_stabilizer.reset()
                 
             if not ctx.state.playing and os.path.exists(st.session_state.webcam_recording):
                 if os.path.getsize(st.session_state.webcam_recording) > 1000:

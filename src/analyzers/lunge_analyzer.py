@@ -1,7 +1,10 @@
 import time
 import numpy as np
 import mediapipe as mp
-from src.core.utils import calculate_angle, get_landmark_pixel
+from src.core.utils import (
+    calculate_angle, get_landmark_pixel, ema_smooth,
+    debounced_transition, SustainedFaultTracker,
+)
 
 class LungeAnalyzer:
     def __init__(self):
@@ -15,7 +18,11 @@ class LungeAnalyzer:
         self.advice = ""
         self.prev_state = "STANDING"
         self.state_counter = 0 
-        self.state_transition_threshold = 3  # Reduced from 4 for faster response 
+        self.state_transition_threshold = 3
+        
+        self.smoothing_alpha = 0.35
+        self.smoothed_knee_angle = None
+        self.valgus_tracker = SustainedFaultTracker(frames_required=5, window=10)
         
         # Locking for stability
         self.locked_view = "FRONT"
@@ -51,8 +58,10 @@ class LungeAnalyzer:
         self.head_over_knee_flags = 0
         self.torso_lean_flags = 0
         self.lead_leg = None
-        self.rep_frame_count = 0 # Track total active frames for ratio-based scoring
+        self.rep_frame_count = 0
         self.current_rep_quality = {}
+        self.valgus_tracker.reset()
+        self.smoothed_knee_angle = None
         # Do not reset locked vars here, they reset on state transition to STANDING
 
     def analyze(self, landmarks, frame_width, frame_height):
@@ -114,15 +123,21 @@ class LungeAnalyzer:
         l_knee_angle = calculate_angle(l_hip, l_knee, l_ank)
         r_knee_angle = calculate_angle(r_hip, r_knee, r_ank)
         
-        # KEY FIX: Always track the WORKING knee (the one bending)
-        # This prevents measuring the straight back leg and failing the rep
-        active_knee_angle = min(l_knee_angle, r_knee_angle)
-        
-        # Determine lead leg by angle if locked is None (Fallback)
-        if self.lead_leg is None and active_knee_angle < 160:
-             if abs(l_knee_angle - r_knee_angle) > 15:
-                 self.lead_leg = "LEFT" if l_knee_angle < r_knee_angle else "RIGHT"
-                 self.locked_lead_leg = self.lead_leg
+        # Lead-leg selection with hysteresis (sticky once locked during rep)
+        if self.lead_leg is None:
+            if abs(l_knee_angle - r_knee_angle) > 15 and min(l_knee_angle, r_knee_angle) < 160:
+                self.lead_leg = "LEFT" if l_knee_angle < r_knee_angle else "RIGHT"
+                self.locked_lead_leg = self.lead_leg
+
+        if self.lead_leg == "LEFT":
+            raw_knee = l_knee_angle
+        elif self.lead_leg == "RIGHT":
+            raw_knee = r_knee_angle
+        else:
+            raw_knee = min(l_knee_angle, r_knee_angle)
+
+        self.smoothed_knee_angle = ema_smooth(self.smoothed_knee_angle, raw_knee, self.smoothing_alpha)
+        active_knee_angle = self.smoothed_knee_angle
 
         if self.state == "STANDING" and active_knee_angle < self.descend_threshold:
              self.feedback = "Descending..."
@@ -139,7 +154,9 @@ class LungeAnalyzer:
             if view == "FRONT" and l_knee[0] > (l_hip[0] + l_ank[0]) / 2 + valgus_threshold: valgus_detected = True
         elif self.lead_leg == "RIGHT":
             if view == "FRONT" and r_knee[0] < (r_hip[0] + r_ank[0]) / 2 - valgus_threshold: valgus_detected = True
-        if valgus_detected: self.knee_valgus_flags += 1
+        if valgus_detected:
+            self.knee_valgus_flags += 1
+        valgus_sustained = self.valgus_tracker.update(valgus_detected)
 
         # B. Hips Level
         hip_tilt_threshold = relative_scale * 0.20
@@ -193,27 +210,23 @@ class LungeAnalyzer:
             self.rep_frame_count += 1
 
         if self.state == "STANDING":
-            if active_knee_angle < self.descend_threshold:
-                self.state_counter += 1
-                if self.state_counter >= self.state_transition_threshold:
-                    self.state = "DESCENDING"
-                    self.state_counter = 0
-                    self.feedback = "Descending..."
-            else:
+            self.state_counter, triggered = debounced_transition(
+                self.state_counter, active_knee_angle < self.descend_threshold, self.state_transition_threshold)
+            if triggered:
+                self.state = "DESCENDING"
                 self.state_counter = 0
+                self.feedback = "Descending..."
 
         elif self.state == "DESCENDING":
             self.min_knee_angle = min(self.min_knee_angle, active_knee_angle)
-            if active_knee_angle < self.bottom_threshold:
-                self.state_counter += 1
-                if self.state_counter >= self.state_transition_threshold:
-                    self.state = "BOTTOM"
-                    self.last_state_change_time = time.time()
-                    self.state_counter = 0
-                    self.feedback = "Hold it!"
+            self.state_counter, triggered = debounced_transition(
+                self.state_counter, active_knee_angle < self.bottom_threshold, self.state_transition_threshold)
+            if triggered:
+                self.state = "BOTTOM"
+                self.last_state_change_time = time.time()
+                self.state_counter = 0
+                self.feedback = "Hold it!"
             elif active_knee_angle > self.descend_threshold + 5:
-                # Abort/Reset if user stands back up without reaching bottom
-                # Removed scoring here to prevent double-counting during wobbles
                 self.state = "STANDING"
                 self.last_state_change_time = time.time()
                 self._reset_rep_stats()
@@ -222,30 +235,29 @@ class LungeAnalyzer:
 
         elif self.state == "BOTTOM":
             self.min_knee_angle = min(self.min_knee_angle, active_knee_angle)
-            if active_knee_angle > self.bottom_threshold + 10:
-                self.state_counter += 1
-                if self.state_counter >= self.state_transition_threshold:
-                    self.state = "ASCENDING"
-                    self.last_state_change_time = time.time()
-                    self.state_counter = 0
-                    self.feedback = "Push up!"
+            self.state_counter, triggered = debounced_transition(
+                self.state_counter, active_knee_angle > self.bottom_threshold + 10, self.state_transition_threshold)
+            if triggered:
+                self.state = "ASCENDING"
+                self.last_state_change_time = time.time()
+                self.state_counter = 0
+                self.feedback = "Push up!"
             else:
                 self.state_counter = 0
 
         elif self.state == "ASCENDING":
-            # Timeout / Stuck Prevention (More aggressive)
             time_in_state = time.time() - self.last_state_change_time
             is_stuck_upright = (time_in_state > 2.0 and active_knee_angle > 140)
-            
-            # Lower stand_threshold to 145 for more reliable completion
-            if active_knee_angle > 145 or is_stuck_upright:
-                self.state_counter += 1
-                if self.state_counter >= self.state_transition_threshold or is_stuck_upright:
-                    self._score_rep() # Finalize and Count
-                    self.state = "STANDING"
-                    self.last_state_change_time = time.time()
-                    self.state_counter = 0
-                    self._reset_rep_stats()
+            complete = active_knee_angle > 145 or is_stuck_upright
+
+            self.state_counter, triggered = debounced_transition(
+                self.state_counter, complete, self.state_transition_threshold)
+            if triggered or is_stuck_upright:
+                self._score_rep()
+                self.state = "STANDING"
+                self.last_state_change_time = time.time()
+                self.state_counter = 0
+                self._reset_rep_stats()
             else:
                 self.state_counter = 0
 
@@ -259,6 +271,7 @@ class LungeAnalyzer:
             "advice": self.advice,
             "last_rep_score": self.current_rep_quality.get("score", 0),
             "reasons": self.current_rep_quality.get("faults", []),
+            "valgus_detected": valgus_sustained,
             "view": view,
             "target_muscles": "Quadriceps, Glutes",
             "l_knee_angle": l_knee_angle,

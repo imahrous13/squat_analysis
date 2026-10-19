@@ -6,3 +6,6 @@ numpy<2.0.0
 streamlit-webrtc
 av
 # ultralytics (Disabled temporarily to ensure MediaPipe stability)
+transformers
+torch
+Pillow

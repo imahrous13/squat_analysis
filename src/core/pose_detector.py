@@ -1,23 +1,29 @@
 import cv2
 import mediapipe as mp
+from src.core.pose_config import create_mediapipe_pose
 
 class PoseDetector:
-    def __init__(self, mode=False, complexity=1, smooth_landmarks=True, 
-                 enable_segmentation=False, smooth_segmentation=True, 
-                 detection_con=0.5, track_con=0.5):
+    def __init__(self, mode=False, complexity=None, smooth_landmarks=None, 
+                 enable_segmentation=None, smooth_segmentation=True, 
+                 detection_con=None, track_con=None):
         """
-        Initializes the MediaPipe Pose object.
+        Initializes the MediaPipe Pose object using centralized config defaults.
         """
         self.mp_pose = mp.solutions.pose
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=mode,
-            model_complexity=complexity,
-            smooth_landmarks=smooth_landmarks,
-            enable_segmentation=enable_segmentation,
-            smooth_segmentation=smooth_segmentation,
-            min_detection_confidence=detection_con,
-            min_tracking_confidence=track_con
-        )
+        overrides = {}
+        if mode:
+            overrides["static_image_mode"] = mode
+        if complexity is not None:
+            overrides["model_complexity"] = complexity
+        if smooth_landmarks is not None:
+            overrides["smooth_landmarks"] = smooth_landmarks
+        if enable_segmentation is not None:
+            overrides["enable_segmentation"] = enable_segmentation
+        if detection_con is not None:
+            overrides["min_detection_confidence"] = detection_con
+        if track_con is not None:
+            overrides["min_tracking_confidence"] = track_con
+        self.pose = create_mediapipe_pose(self.mp_pose, mode="default", **overrides)
         self.mp_drawing = mp.solutions.drawing_utils
         self.results = None
 
